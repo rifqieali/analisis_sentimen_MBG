@@ -25,6 +25,8 @@ from sklearn.model_selection import GridSearchCV
 from wordcloud import WordCloud
 import warnings
 
+#aku ganteng
+
 warnings.filterwarnings('ignore')
 
 # Konfigurasi Halaman
