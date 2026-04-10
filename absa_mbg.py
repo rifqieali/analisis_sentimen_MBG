@@ -290,7 +290,7 @@ elif menu == PAGES[3]:
                 
                 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
                 
-                tfidf = TfidfVectorizer(max_features=2000, ngram_range=(1,2), sublinear_tf=True)
+                tfidf = TfidfVectorizer(max_features=3000, ngram_range=(1,2), sublinear_tf=True)
                 X_train_vec = tfidf.fit_transform(X_train)
                 X_test_vec = tfidf.transform(X_test)
                 
