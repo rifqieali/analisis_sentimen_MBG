@@ -368,16 +368,19 @@ elif menu == PAGES[2]:
                 
         if 'sentimen' in df.columns:
             c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns(3)
             with c1:
                 st.subheader("Distribusi Sentimen")
-                fig, ax = plt.subplots(figsize=(6,4))
+                fig, ax = plt.subplots()
                 labels = df['sentimen'].value_counts().index
                 sizes = df['sentimen'].value_counts().values
-                colors = ['#2ecc71' if l=='Positif' else '#e74c3c' if l=='Negatif' else '#bdc3c7' for l in labels]
-                ax.pie(sizes, labels=labels, autopct='%1.1f%%', colors=colors, startangle=140)
+                ax.pie(sizes, labels=labels, autopct='%1.1f%%')
                 st.pyplot(fig)
             with c2:
                 st.subheader("Distribusi Aspek")
+                st.bar_chart(df['sentimen'].value_counts())
+            with c3:
+                st.subheader("Distribusi Sentimen")
                 st.bar_chart(df['aspek'].value_counts())
             
             st.dataframe(df[['segment', 'aspek', 'sentimen']].head(10))

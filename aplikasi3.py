@@ -24,6 +24,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.svm import LinearSVC
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, confusion_matrix
+from wordcloud import WordCloud
 
 warnings.filterwarnings('ignore')
 
@@ -91,15 +92,20 @@ def load_inset():
     pos_url = "https://raw.githubusercontent.com/fajri91/InSet/master/positive.tsv"
     neg_url = "https://raw.githubusercontent.com/fajri91/InSet/master/negative.tsv"
     try:
-        pos_df = pd.read_csv(pos_url, sep="\t", header=None, names=["word", "weight"])
-        neg_df = pd.read_csv(neg_url, sep="\t", header=None, names=["word", "weight"])
-        pos_dict = dict(zip(pos_df["word"].str.lower(), pd.to_numeric(pos_df["weight"], errors='coerce').fillna(0)))
-        neg_dict = dict(zip(neg_df["word"].str.lower(), pd.to_numeric(neg_df["weight"], errors='coerce').fillna(0)))
-        return pos_dict, neg_dict
+        df_pos = pd.read_csv(pos_url, sep='\t', names=['word', 'weight'], header=None)
+        df_neg = pd.read_csv(neg_url, sep='\t', names=['word', 'weight'], header=None)
+        df_lexicon = pd.concat([df_pos, df_neg], ignore_index=True)
+        df_lexicon['weight'] = pd.to_numeric(df_lexicon['weight'], errors='coerce')
+        df_lexicon = df_lexicon.dropna(subset=['weight'])
+        df_lexicon['word'] = df_lexicon['word'].astype(str).str.strip()
+        df_lexicon['weight'] = df_lexicon['weight'].astype(int)
+        
+        lexicon = dict(zip(df_lexicon['word'], df_lexicon['weight']))
+        return lexicon
     except Exception:
-        return {}, {}
+        return {}
 
-pos_lexicon, neg_lexicon = load_inset()
+lexicon = load_inset()
 
 # Dictionary Aspek
 ASPEK_DICT = {
@@ -159,13 +165,18 @@ def get_aspect(text: str):
     return "Lainnya"
 
 def get_sentiment(text: str):
-    tokens = text.split()
-    pos_score = sum(pos_lexicon.get(t, 0) for t in tokens)
-    neg_score = sum(abs(neg_lexicon.get(t, 0)) for t in tokens)
-    
-    if pos_score > neg_score: return "Positif"
-    elif neg_score > pos_score: return "Negatif"
-    return "Netral"
+    if not isinstance(text, str): return 'Netral'
+    score = 0
+    words = text.split()
+    for i, word in enumerate(words):
+        if word in lexicon:
+            val = lexicon[word]
+            if i > 0 and words[i-1] in negation_words: val = -val
+            elif i > 1 and words[i-2] in negation_words: val = -val
+            score += val
+    if score > 0: return 'Positif'
+    elif score < 0: return 'Negatif'
+    else: return 'Netral'
 
 # ==========================================
 # INISIALISASI SESSION STATE
@@ -305,8 +316,44 @@ elif menu == PAGES[2]:
             
             st.dataframe(df[['segment', 'aspek', 'sentimen']].head(10))
 
-            st.button("Lanjut ke Modeling", on_click=set_page, args=(PAGES[3],))
+            
 
+            # Wordcloud dari file awal
+            st.subheader("Visualisasi WordCloud")
+            wc_c1, wc_c2, wc_c3 = st.columns(3)
+            with wc_c1:
+                st.markdown("**Sentimen Positif**")
+                text_pos = " ".join(df[df['sentimen'] == 'Positif']['segment'].astype(str))
+                if text_pos.strip():
+                    wc_pos = WordCloud(width=300, height=200, background_color='white', colormap='Greens').generate(text_pos)
+                    fig_wc, ax_wc = plt.subplots()
+                    ax_wc.imshow(wc_pos, interpolation='bilinear')
+                    ax_wc.axis('off')
+                    st.pyplot(fig_wc)
+                    plt.close(fig_wc)
+            with wc_c2:
+                st.markdown("**Sentimen Negatif**")
+                text_neg = " ".join(df[df['sentimen'] == 'Negatif']['segment'].astype(str))
+                if text_neg.strip():
+                    wc_neg = WordCloud(width=300, height=200, background_color='white', colormap='Reds').generate(text_neg)
+                    fig_wc, ax_wc = plt.subplots()
+                    ax_wc.imshow(wc_neg, interpolation='bilinear')
+                    ax_wc.axis('off')
+                    st.pyplot(fig_wc)
+                    plt.close(fig_wc)
+            with wc_c3:
+                st.markdown("**Sentimen Netral**")
+                text_neu = " ".join(df[df['sentimen'] == 'Netral']['segment'].astype(str))
+                if text_neu.strip():
+                    wc_neu = WordCloud(width=300, height=200, background_color='white', colormap='Blues').generate(text_neu)
+                    fig_wc, ax_wc = plt.subplots()
+                    ax_wc.imshow(wc_neu, interpolation='bilinear')
+                    ax_wc.axis('off')
+                    st.pyplot(fig_wc)
+                    plt.close(fig_wc)
+
+            st.button("Lanjut ke Modeling", on_click=set_page, args=(PAGES[3],))
+            
     else:
         st.warning("Selesaikan tahap Preprocessing terlebih dahulu.")
 

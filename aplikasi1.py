@@ -11,6 +11,7 @@ import joblib
 import os
 from io import BytesIO
 from nltk.tokenize import word_tokenize
+from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
@@ -18,12 +19,8 @@ from sklearn.naive_bayes import MultinomialNB
 from sklearn.svm import SVC
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import GridSearchCV
-from sklearn.utils.class_weight import compute_class_weight
 from wordcloud import WordCloud
 import warnings
-
-#aku ganteng
 
 warnings.filterwarnings('ignore')
 
@@ -42,15 +39,17 @@ def load_resources():
         except LookupError:
             nltk.download(resource)
     
+    factory_stem = StemmerFactory()
+    stemmer = factory_stem.create_stemmer()
     factory_stop = StopWordRemoverFactory()
     stopwords_indo = factory_stop.get_stop_words()
     
     negation_words = {'tidak', 'tak', 'tiada', 'bukan', 'jangan', 'belum', 'kurang', 'gak', 'ga', 'nggak', 'enggak'}
     final_stopwords = set(stopwords_indo) - negation_words
     
-    return final_stopwords, negation_words
+    return stemmer, final_stopwords, negation_words
 
-final_stopwords, negation_words = load_resources()
+stemmer, final_stopwords, negation_words = load_resources()
 
 @st.cache_data
 def load_normalization_dict():
@@ -80,7 +79,9 @@ def load_inset_lexicon():
         df_lexicon['weight'] = df_lexicon['weight'].astype(int)
         
         lexicon = dict(zip(df_lexicon['word'], df_lexicon['weight']))
-        
+        topic_stopwords = {'mbg', 'makan', 'bergizi', 'gratis', 'gizi', 'program','prabowo', 'jokowi', 'presiden', 'menteri', 'indonesia'}
+        for w in topic_stopwords:
+            if w in lexicon: del lexicon[w]
         return lexicon
     except Exception:
         return {}
@@ -114,11 +115,11 @@ def segmentasi_kalimat(text):
     segmen = [s.strip() for s in re.split(konjungsi, text) if s.strip() and s.strip() not in ['tetapi', 'namun', 'meskipun', 'tapi', 'sedangkan', 'cuman', 'cuma', 'sayangnya', 'padahal', 'walau', 'walaupun', 'pasalnya']]
     return segmen if segmen else [text]
 
-def remove_stopwords(text):
-    """Tahap 6: Stopword Removal"""
+def stopword_and_stem(text):
+    """Tahap 6 & 7: Stopword Removal dan Stemming"""
     words = text.split()
     words = [w for w in words if w not in final_stopwords]
-    return ' '.join(words)
+    return stemmer.stem(' '.join(words))
 
 def preprocess_text(text):
     """
@@ -126,7 +127,7 @@ def preprocess_text(text):
     1. Cleaning & Case Folding
     2. Tokenisasi & Normalisasi
     3. Segmentasi
-    4. Stopword (per segmen)
+    4. Stopword & Stemming (per segmen)
     """
     # 1. Cleaning & Case Folding
     text_clean = clean_text(text)
@@ -137,10 +138,10 @@ def preprocess_text(text):
     # 3. Segmentasi
     segmen_list = segmentasi_kalimat(text_norm)
     
-    # 4. Stopword (per segmen)
+    # 4. Stopword & Stemming (per segmen)
     final_segments = []
     for seg in segmen_list:
-        processed = remove_stopwords(seg)
+        processed = stopword_and_stem(seg)
         if processed:
             final_segments.append(processed)
             
@@ -238,7 +239,7 @@ elif menu == "2. Preprocessing & Segmentasi":
         col_name = st.selectbox("Pilih kolom teks:", df.columns)
         
         if st.button("Mulai Pemrosesan (Semua Data)"):
-            with st.spinner('Memecah segmen dan membersihkan teks...'):
+            with st.spinner('Memecah segmen dan membersihkan teks (Proses Stemming Sastrawi membutuhkan waktu)...'):
                 # Simpan index asli untuk melacak dari dokumen mana segmen ini berasal
                 df['doc_id'] = df.index
                 
@@ -287,15 +288,23 @@ elif menu == "3. Labeling & Aspek":
                 st.session_state['df_exploded'] = df
             
             st.success("Pelabelan Selesai!")
-            c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns(3)
             with c1:
-                st.subheader("Distribusi Sentimen (Level Segmen)")
-                st.bar_chart(df['sentiment_label'].value_counts())
+                st.subheader("Distribusi Sentimen")
+                fig, ax = plt.subplots()
+                labels = df['sentiment_label'].value_counts().index
+                sizes = df['sentiment_label'].value_counts().values
+                ax.pie(sizes, labels=labels, autopct='%1.1f%%')
+                st.pyplot(fig)
+                
             with c2:
                 st.subheader("Distribusi Aspek")
                 df_asp = df.explode('aspect_list')
                 st.bar_chart(df_asp['aspect_list'].value_counts())
-                
+            with c3:
+                st.subheader("Distribusi Sentimen (Level Segmen)")
+                st.bar_chart(df['sentiment_label'].value_counts())
+
             st.dataframe(df[['segment', 'sentiment_label', 'aspect_list']].head())
             
             # --- CONTOH DATA PER ASPEK ---
@@ -383,82 +392,85 @@ elif menu == "3. Labeling & Aspek":
     else:
         st.warning("Lakukan Preprocessing & Segmentasi terlebih dahulu.")
 
-# --- TAB 4: MODELING (TRAINING) ---
+# --- TAB 4: MODELING ---
 elif menu == "4. Modeling (Training)":
-    st.header("Training Model Machine Learning")
-    if st.session_state['df_exploded'] is not None:
+    st.header("Training & Evaluasi Model (Level Segmen)")
+    
+    if st.session_state['df_exploded'] is not None and 'sentiment_label' in st.session_state['df_exploded'].columns:
         df = st.session_state['df_exploded']
+        
         remove_neutral = st.checkbox("Hapus Data Netral?", value=True)
-        # Ganti opsi SMOTE dengan Pembobotan Kelas (Class Weight)
-        use_balancing = st.checkbox("Gunakan Penyeimbangan Bobot (Class Weight) agar cepat?", value=True)
         
         df_model = df[df['sentiment_label'] != 'Netral'] if remove_neutral else df
             
-        if st.button("Mulai Training Model"):
-            with st.spinner("Melatih model dengan optimasi tingkat tinggi... (Seharusnya selesai di bawah 2 menit)"):
-                
-                X = df_model['segment']
-                y = df_model['sentiment_label']
-                
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
-                
-                # OPTIMASI 1: Batasi fitur TF-IDF agar RAM tidak jebol
-                tfidf = TfidfVectorizer(max_features=3000)
-                
-                # OPTIMASI 2: Penyeimbangan data instan tanpa SMOTE
-                if use_balancing:
-                    # SVM mendukung class_weight otomatis
-                    svm_model = SVC(kernel='linear', class_weight='balanced', probability=True, random_state=42)
-                    # Naive Bayes menangani imbalanced lewat prior probability
-                    classes = np.unique(y_train)
-                    weights = compute_class_weight('balanced', classes=classes, y=y_train)
-                    prior = weights / weights.sum()
-                    nb_model = MultinomialNB(class_prior=prior)
-                else:
-                    svm_model = SVC(kernel='linear', probability=True, random_state=42)
-                    nb_model = MultinomialNB()
-
-                # Buat Pipeline standar (Bukan ImbPipeline)
-                from sklearn.pipeline import Pipeline
-                pipe_nb = Pipeline([('tfidf', tfidf), ('clf', nb_model)])
-                pipe_svm = Pipeline([('tfidf', tfidf), ('clf', svm_model)])
-                
-                # OPTIMASI 3: GridSearch yang lebih rasional (Fokus pada C saja)
-                param_grid_svm = {'clf__C': [0.1, 1, 10]}
-                param_grid_nb = {'clf__alpha': [0.1, 0.5, 1.0]}
-                
-                grid_nb = GridSearchCV(pipe_nb, param_grid_nb, cv=3, n_jobs=-1, scoring='f1_macro')
-                grid_svm = GridSearchCV(pipe_svm, param_grid_svm, cv=3, n_jobs=-1, scoring='f1_macro')
-                
-                # Eksekusi (Akan jauh lebih cepat)
-                grid_nb.fit(X_train, y_train)
-                grid_svm.fit(X_train, y_train)
-                
-                best_nb = grid_nb.best_estimator_
-                best_svm = grid_svm.best_estimator_
-                
-                y_pred_nb = best_nb.predict(X_test)
-                y_pred_svm = best_svm.predict(X_test)
-                
-                # Simpan ke memori
-                st.session_state['model_nb'] = best_nb
-                st.session_state['model_svm'] = best_svm
-                
-                st.session_state['y_test'] = y_test
-                st.session_state['y_pred_nb'] = y_pred_nb
-                st.session_state['y_pred_svm'] = y_pred_svm
-                
-                test_df = df_model.loc[X_test.index].copy()
-                test_df['y_true'] = y_test
-                test_df['pred_nb'] = y_pred_nb
-                test_df['pred_svm'] = y_pred_svm
-                st.session_state['test_data_eval'] = test_df
-                
-            st.success("Training Selesai dengan Cepat!")
-            st.info(f"✨ Parameter NB Terbaik: {grid_nb.best_params_}")
-            st.info(f"✨ Parameter SVM Terbaik: {grid_svm.best_params_}")
-            
-            # (Lanjutkan dengan kode evaluasi dan Confusion Matrix Anda di sini...)
+        st.subheader("Pilih Metode Modeling")
+        model_action = st.radio("Aksi:", ["Latih Model Baru", "Muat Model Tersimpan"], horizontal=True)
+        
+        if model_action == "Latih Model Baru":
+            if st.button("Mulai Training Model"):
+                with st.spinner("Melatih model dengan TF-IDF, Naive Bayes, dan SVM..."):
+                    
+                    X = df_model['segment']
+                    y = df_model['sentiment_label']
+                    
+                    # Split Data
+                    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+                    
+                    # --- SETUP PIPELINE & TRAINING ---
+                    best_nb = Pipeline([
+                        ('tfidf', TfidfVectorizer()), 
+                        ('clf', MultinomialNB())
+                    ])
+                    best_svm = Pipeline([
+                        ('tfidf', TfidfVectorizer()), 
+                        ('clf', SVC(kernel='linear', probability=True, random_state=42))
+                    ])
+                    
+                    best_nb.fit(X_train, y_train)
+                    best_svm.fit(X_train, y_train)
+                    
+                    y_pred_nb = best_nb.predict(X_test)
+                    y_pred_svm = best_svm.predict(X_test)
+                    
+                    # --- HITUNG TF-IDF UNTUK VISUALISASI ---
+                    vectorizer = best_nb.named_steps['tfidf']
+                    X_tfidf = vectorizer.transform(X_train)
+                    sum_tfidf = X_tfidf.sum(axis=0)
+                    words = vectorizer.get_feature_names_out()
+                    tfidf_data = [(words[i], sum_tfidf[0, i]) for i in range(len(words))]
+                    df_tfidf = pd.DataFrame(tfidf_data, columns=['Kata', 'Skor Total TF-IDF'])
+                    df_tfidf = df_tfidf.sort_values(by='Skor Total TF-IDF', ascending=False).head(10).reset_index(drop=True)
+                    
+                    # --- SIMPAN KE SESSION STATE ---
+                    st.session_state['model_nb'] = best_nb
+                    st.session_state['model_svm'] = best_svm
+                    
+                    st.session_state['y_test'] = y_test
+                    st.session_state['y_pred_nb'] = y_pred_nb
+                    st.session_state['y_pred_svm'] = y_pred_svm
+                    st.session_state['df_tfidf'] = df_tfidf
+                    
+                    test_df = df_model.loc[X_test.index].copy()
+                    test_df['y_true'] = y_test
+                    test_df['pred_nb'] = y_pred_nb
+                    test_df['pred_svm'] = y_pred_svm
+                    st.session_state['test_data_eval'] = test_df
+                    
+                    # --- SIMPAN MODEL KE DISK ---
+                    saved_data = {
+                        'model_nb': best_nb,
+                        'model_svm': best_svm,
+                        'y_test': y_test,
+                        'y_pred_nb': y_pred_nb,
+                        'y_pred_svm': y_pred_svm,
+                        'test_data_eval': test_df,
+                        'df_tfidf': df_tfidf
+                    }
+                    try:
+                        joblib.dump(saved_data, 'saved_model_data.joblib')
+                        st.success("Training dan Optimasi Selesai! Model berhasil disimpan.")
+                    except Exception as e:
+                        st.warning(f"Model dilatih namun gagal disimpan: {e}")
         else:
             if st.button("Muat Model Tersimpan"):
                 with st.spinner("Memuat model dari penyimpanan..."):
@@ -474,10 +486,6 @@ elif menu == "4. Modeling (Training)":
                             st.session_state['df_tfidf'] = saved_data['df_tfidf']
                             
                         st.success("Model berhasil dimuat dari penyimpanan!")
-                        if 'best_params_nb' in saved_data:
-                            st.info(f"✨ Parameter Naive Bayes: {saved_data['best_params_nb']}")
-                        if 'best_params_svm' in saved_data:
-                            st.info(f"✨ Parameter SVM: {saved_data['best_params_svm']}")
                     else:
                         st.error("Tidak ditemukan file model yang tersimpan ('saved_model_data.joblib'). Silakan pilih 'Latih Model Baru' terlebih dahulu.")
         
@@ -525,23 +533,8 @@ elif menu == "4. Modeling (Training)":
             st.divider()
             st.subheader("3. Kata dengan Bobot TF-IDF Tertinggi")
             
-            try:
-                # PERBAIKAN: Ambil vectorizer langsung dari model terbaik di memory
-                best_nb = st.session_state['model_nb']
-                vectorizer = best_nb.named_steps['tfidf']
-                
-                # Transform data training (kita ambil X_train kembali dari df_model)
-                X_train_tfidf = vectorizer.transform(X_train)
-                
-                # Hitung sum TF-IDF per kata
-                sum_tfidf = X_train_tfidf.sum(axis=0)
-                words = vectorizer.get_feature_names_out()
-                
-                # Buat DataFrame
-                tfidf_data = [(words[i], sum_tfidf[0, i]) for i in range(len(words))]
-                df_tfidf = pd.DataFrame(tfidf_data, columns=['Kata', 'Skor Total TF-IDF'])
-                df_tfidf = df_tfidf.sort_values(by='Skor Total TF-IDF', ascending=False).head(10).reset_index(drop=True)
-                
+            if 'df_tfidf' in st.session_state:
+                df_tfidf = st.session_state['df_tfidf']
                 c_tf1, c_tf2 = st.columns([1, 2])
                 with c_tf1:
                     st.dataframe(df_tfidf)
@@ -550,8 +543,8 @@ elif menu == "4. Modeling (Training)":
                     sns.barplot(x='Skor Total TF-IDF', y='Kata', data=df_tfidf, palette='viridis', ax=ax_tf)
                     ax_tf.set_title("Top 10 Kata Paling Berbobot (TF-IDF)")
                     st.pyplot(fig_tf)
-            except Exception as e:
-                st.error(f"Gagal memuat visualisasi TF-IDF. Pastikan model sudah ditraining. Error: {e}")
+            else:
+                st.info("Data TF-IDF tidak tersedia di session state.")
 
             # --- PROBABILITAS PRIOR & LIKELIHOOD NAIVE BAYES ---
             st.divider()
@@ -777,19 +770,23 @@ elif menu == "5. Evaluasi Detail (Per Aspek)":
     else:
         st.error("Model belum dilatih.")
 
+# --- TAB 6: PREDIKSI ---
 # --- TAB 6: PREDIKSI MANUAL ---
 elif menu == "6. Prediksi Manual":
     st.header("Uji Coba Prediksi Manual")
     
+    # 1. VALIDASI LOGIS: Cek apakah model di Tab 4 sudah dilatih
     if 'model_nb' not in st.session_state or 'model_svm' not in st.session_state:
         st.error("Model belum dilatih! Anda tidak bisa melakukan prediksi manual.")
         st.warning("Silakan kembali ke 'Tab 4. Modeling', jalankan training, lalu kembali ke sini.")
     else:
-        st.info("Menggunakan model Naive Bayes dan SVM yang telah dioptimasi. Prediksi dilakukan per segmen kalimat.")
+        st.info("Menggunakan model Naive Bayes dan SVM yang telah dilatih. Prediksi dilakukan per segmen kalimat.")
         
+        # Ambil model (Pipeline) dari memori
         model_nb = st.session_state['model_nb']
         model_svm = st.session_state['model_svm']
         
+        # Area input user
         user_input = st.text_area("Masukkan teks atau tweet yang ingin diprediksi sentimennya:", height=150)
         
         if st.button("Prediksi Sentimen"):
@@ -797,72 +794,40 @@ elif menu == "6. Prediksi Manual":
                 st.warning("Teks tidak boleh kosong. Masukkan kalimat untuk diuji.")
             else:
                 with st.spinner("Memproses teks dan melakukan prediksi..."):
-                    
-                    # 1. Preprocessing
+                    # `preprocess_text` mengembalikan list dari segmen yang sudah diproses.
                     processed_segments = preprocess_text(user_input)
                     
                     if not processed_segments:
-                        st.warning("Teks tidak menghasilkan segmen yang valid setelah dibersihkan (mungkin isinya hanya angka/simbol).")
+                        st.warning("Teks tidak menghasilkan segmen yang dapat dianalisis setelah preprocessing.")
                         st.stop()
 
-                    # 2. Prediksi Kelas
+                    # Lakukan prediksi untuk setiap segmen.
                     preds_nb = model_nb.predict(processed_segments)
                     preds_svm = model_svm.predict(processed_segments)
                     
-                    # 3. Prediksi Probabilitas (Persentase Keyakinan)
-                    # Ini krusial agar Anda tahu apakah model sangat yakin atau sebenarnya ragu-ragu
-                    probs_nb = model_nb.predict_proba(processed_segments)
-                    
-                    # SVM membutuhkan probability=True saat training untuk ini.
-                    # Jika menggunakan Linear SVC tanpa probability, kita pakai fallback
-                    try:
-                        probs_svm = model_svm.predict_proba(processed_segments)
-                    except:
-                        probs_svm = None
-
                     st.divider()
-                    st.subheader("Hasil Bedah Prediksi")
+                    st.subheader("Hasil Analisis")
                     
                     st.markdown("**Teks Asli:**")
                     st.write(f"> *{user_input}*")
                     
+                    st.markdown("**Hasil Prediksi per Segmen:**")
+                    
                     def get_color(label):
-                        if str(label).lower() == 'positif': return "🟢 Positif"
-                        elif str(label).lower() == 'negatif': return "🔴 Negatif"
-                        return "⚪ Netral"
+                        if str(label).lower() == 'positif': return "🟢"
+                        elif str(label).lower() == 'negatif': return "🔴"
+                        return "⚪"
                     
-                    # Buat DataFrame untuk menampilkan hasil dengan metrik lengkap
+                    # Buat DataFrame untuk menampilkan hasil dengan rapi
                     results_data = []
-                    classes_nb = model_nb.classes_
-                    
                     for i, segment in enumerate(processed_segments):
-                        # Ambil Aspek dan lacak kata kuncinya (Intersect antara segmen dan dictionary)
                         aspects = get_aspects(segment)
-                        
-                        # Format Probabilitas NB
-                        prob_str_nb = " | ".join([f"{cls}: {probs_nb[i][j]:.1%}" for j, cls in enumerate(classes_nb)])
-                        
-                        # Format Probabilitas SVM
-                        if probs_svm is not None:
-                            prob_str_svm = " | ".join([f"{cls}: {probs_svm[i][j]:.1%}" for j, cls in enumerate(model_svm.classes_)])
-                        else:
-                            prob_str_svm = "Probabilitas tidak tersedia (Kernel Linear Strict)"
-                            
                         results_data.append({
-                            "Segmen Teks Bersih": segment,
-                            "Deteksi Aspek": ", ".join(aspects),
-                            "Label NB": get_color(preds_nb[i]),
-                            "Keyakinan NB": prob_str_nb,
-                            "Label SVM": get_color(preds_svm[i]),
-                            "Keyakinan SVM": prob_str_svm
+                            "Segmen Teks": segment,
+                            "Aspek": ", ".join(aspects),
+                            "Prediksi Naive Bayes": f"{get_color(preds_nb[i])} {preds_nb[i]}",
+                            "Prediksi SVM": f"{get_color(preds_svm[i])} {preds_svm[i]}"
                         })
                     
-                    st.table(pd.DataFrame(results_data))
-                    
-                    # --- INSIGHT DIAGNOSTIK OTOMATIS ---
-                    st.markdown("### 💡 Diagnostik Kesalahan (Baca Ini Jika Prediksi Salah)")
-                    st.markdown("""
-                    1. **Lihat 'Segmen Teks Bersih':** Apakah ada kata penting (seperti kata 'tidak') yang terhapus oleh Stopword? Jika iya, pantas saja sentimennya berbalik.
-                2. **Lihat 'Deteksi Aspek':** Aspek diekstrak berdasarkan kata kunci yang tersisa setelah dibersihkan. Jika teks bersihnya adalah `"makan buruk"`, tapi tidak ada kata `"buruk"` di daftar kamus Aspek Anda (di baris awal kode), ia akan dilempar ke `"Lainnya"`.
-                    3. **Lihat 'Keyakinan (Probabilitas)':** Jika persentase Positif `49%` dan Negatif `51%`, artinya model Anda sebenarnya ragu-ragu karena data latihnya kurang variatif.
-                    """)
+                    results_df = pd.DataFrame(results_data)
+                    st.table(results_df)
