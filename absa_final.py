@@ -32,24 +32,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.svm import LinearSVC
 from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score,
+    accuracy_score, classification_report, precision_score, recall_score,
     f1_score, confusion_matrix
 )
 from wordcloud import WordCloud
 
 warnings.filterwarnings('ignore')
 
-# ============================================================
-# KONFIGURASI HALAMAN
-# ============================================================
-st.set_page_config(page_title="Analisis Sentimen MBG", layout="wide", page_icon="📊")
-st.markdown("""
-    <style>
-    .main {background-color: #FAFAFA;}
-    h1, h2, h3 {color: #2C3E50; font-family: 'Segoe UI', sans-serif;}
-    .stButton>button {border-radius: 5px; border: 1px solid #BDC3C7;}
-    </style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="Analisis Sentimen MBG", layout="wide", page_icon="📑")
 
 # ============================================================
 # RESOURCE LOADING (CACHED)
@@ -233,8 +223,8 @@ for key, default in [
 def set_page(page_name):
     st.session_state['current_page'] = page_name
 
-st.title("📊 Analisis Sentimen Program Makan Bergizi Gratis")
-st.markdown("Berbasis **InSet Lexicon**, **Stemming Sastrawi**, dan **Machine Learning** (NB vs LinearSVC)")
+st.title("Analisis Sentimen Program Makan Bergizi Gratis")
+st.markdown("Berbasis **InSet Lexicon**, **Stemming Sastrawi**, dan **Machine Learning** (MultinomialNB vs LinearSVC)")
 
 menu = st.sidebar.selectbox("Pilih Tahapan", PAGES, key='current_page')
 
@@ -412,123 +402,165 @@ elif menu == PAGES[3]:
     df_exp = st.session_state.get('df_exploded')
     if df_exp is not None and 'sentiment_label' in df_exp.columns:
 
+        # --- AUTO-LOAD MODEL SILENTLY (JIKA ADA) ---
+        if 'model_nb' not in st.session_state and os.path.exists('saved_model_data.joblib'):
+            try:
+                saved = joblib.load('saved_model_data.joblib')
+                for k in ['model_nb', 'model_svm', 'vectorizer', 'y_test',
+                          'y_pred_nb', 'y_pred_svm', 'test_data_eval', 't_nb', 't_svm']:
+                    if k in saved:
+                        st.session_state[k] = saved[k]
+                        if k in ['model_nb', 'model_svm', 'vectorizer']:
+                            st.session_state[f"{k}_final"] = saved[k]
+            except Exception:
+                pass
+
         remove_neutral = st.checkbox("Hapus data Netral dari training?", value=True)
         df_model = df_exp[df_exp['sentiment_label'] != 'Netral'].copy() if remove_neutral else df_exp.copy()
 
-        model_action = st.radio("Aksi:", ["Latih Model Baru", "Muat Model Tersimpan"], horizontal=True)
+        if st.button("Mulai Training Model"):
+            with st.spinner("Ekstraksi TF-IDF dan persiapan data..."):
+                X = df_model['segment']
+                y = df_model['sentiment_label']
 
-        if model_action == "Latih Model Baru":
-            if st.button("Mulai Training"):
-                with st.spinner("Ekstraksi TF-IDF dan pelatihan model..."):
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=0.2, random_state=42, stratify=y
+                )
 
-                    my_bar = st.progress(0)
+                tfidf = TfidfVectorizer(**TFIDF_PARAMS)
+                X_train_vec = tfidf.fit_transform(X_train)
+                X_test_vec = tfidf.transform(X_test)
+                
+            # --- ANIMASI PROGRESS BAR (MIMIC APLIKASI2) ---
+            col_prog1, col_prog2 = st.columns(2)
+            
+            with col_prog1:
+                st.write("**Melatih Naive Bayes...**")
+                pb_nb = st.progress(0)
+                t_nb = time.perf_counter()
+                nb = MultinomialNB()
+                
+                # Simulasi progres agar UI tidak kaku
+                for i in range(50):
+                    time.sleep(0.005)
+                    pb_nb.progress(i + 1)
+                    
+                nb.fit(X_train_vec, y_train)
+                pb_nb.progress(100)
+                t_nb = time.perf_counter() - t_nb
+                y_pred_nb = nb.predict(X_test_vec)
+                
+            with col_prog2:
+                st.write("**Melatih LinearSVC...**")
+                pb_svm = st.progress(0)
+                t_svm = time.perf_counter()
+                svm = LinearSVC(class_weight='balanced', random_state=42)
+                
+                # Simulasi progres agar UI tidak kaku
+                for i in range(50):
+                    time.sleep(0.005)
+                    pb_svm.progress(i + 1)
+                    
+                svm.fit(X_train_vec, y_train)
+                pb_svm.progress(100)
+                t_svm = time.perf_counter() - t_svm
+                y_pred_svm = svm.predict(X_test_vec)
 
-                    for percent_complete in range(100):
-                        time.sleep(0.1) # Simulasi proses
-                        my_bar.progress(percent_complete + 1)
-                    records = []
+            # Simpan ke session state
+            st.session_state['model_nb'] = nb
+            st.session_state['model_svm'] = svm
+            st.session_state['vectorizer'] = tfidf
+            st.session_state['y_test'] = y_test
+            st.session_state['y_pred_nb'] = y_pred_nb
+            st.session_state['y_pred_svm'] = y_pred_svm
+            st.session_state['t_nb'] = t_nb
+            st.session_state['t_svm'] = t_svm
+            
+            st.session_state['model_nb_final'] = nb
+            st.session_state['model_svm_final'] = svm
+            st.session_state['vectorizer_final'] = tfidf
 
-                    X = df_model['segment']
-                    y = df_model['sentiment_label']
+            test_df = df_model.loc[X_test.index].copy()
+            test_df['y_true'] = y_test.values
+            test_df['pred_nb'] = y_pred_nb
+            test_df['pred_svm'] = y_pred_svm
+            st.session_state['test_data_eval'] = test_df
 
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        X, y, test_size=0.2, random_state=42, stratify=y
-                    )
+            # Simpan model ke disk
+            saved = {
+                'model_nb': nb, 'model_svm': svm, 'vectorizer': tfidf,
+                'y_test': y_test, 'y_pred_nb': y_pred_nb, 'y_pred_svm': y_pred_svm,
+                'test_data_eval': test_df, 't_nb': t_nb, 't_svm': t_svm
+            }
+            try:
+                joblib.dump(saved, 'saved_model_data.joblib')
+            except Exception as e:
+                st.warning(f"Training selesai, namun gagal simpan ke disk: {e}")
 
-                    # TF-IDF — fit hanya pada training (mencegah data leakage)
-                    tfidf = TfidfVectorizer(**TFIDF_PARAMS)
-                    X_train_vec = tfidf.fit_transform(X_train)
-                    X_test_vec = tfidf.transform(X_test)
 
-                    # Naive Bayes
-                    nb = MultinomialNB(alpha=1.0)
-                    nb.fit(X_train_vec, y_train)
-                    y_pred_nb = nb.predict(X_test_vec)
 
-                    # LinearSVC — lebih cepat dan akurasi setara SVC(kernel='linear')
-                    svm = LinearSVC(class_weight='balanced', random_state=42, max_iter=2000, C=1.0)
-                    svm.fit(X_train_vec, y_train)
-                    y_pred_svm = svm.predict(X_test_vec)
-
-                    # Simpan ke session state
-                    st.session_state['model_nb'] = nb
-                    st.session_state['model_svm'] = svm
-                    st.session_state['vectorizer'] = tfidf
-                    st.session_state['y_test'] = y_test
-                    st.session_state['y_pred_nb'] = y_pred_nb
-                    st.session_state['y_pred_svm'] = y_pred_svm
-
-                    test_df = df_model.loc[X_test.index].copy()
-                    test_df['y_true'] = y_test.values
-                    test_df['pred_nb'] = y_pred_nb
-                    test_df['pred_svm'] = y_pred_svm
-                    st.session_state['test_data_eval'] = test_df
-
-                    # Simpan model ke disk
-                    saved = {
-                        'model_nb': nb, 'model_svm': svm, 'vectorizer': tfidf,
-                        'y_test': y_test, 'y_pred_nb': y_pred_nb, 'y_pred_svm': y_pred_svm,
-                        'test_data_eval': test_df,
-                    }
-                    try:
-                        joblib.dump(saved, 'saved_model_data.joblib')
-                        st.success("Training selesai. Model disimpan ke disk.")
-                    except Exception as e:
-                        st.warning(f"Training selesai, namun gagal simpan ke disk: {e}")
-
-        else:  # Muat model tersimpan
-            if st.button("Muat Model Tersimpan"):
-                if os.path.exists('saved_model_data.joblib'):
-                    saved = joblib.load('saved_model_data.joblib')
-                    for k in ['model_nb', 'model_svm', 'vectorizer', 'y_test',
-                              'y_pred_nb', 'y_pred_svm', 'test_data_eval']:
-                        if k in saved:
-                            st.session_state[k] = saved[k]
-                    st.success("Model berhasil dimuat.")
-                else:
-                    st.error("File 'saved_model_data.joblib' tidak ditemukan. Latih model baru terlebih dahulu.")
-
-        st.divider()
-
-        # ── TAMPILKAN HASIL EVALUASI ───────────────────────────────────────
+        # ── TAMPILKAN HASIL EVALUASI SIDE-BY-SIDE ──────────
         if 'y_test' in st.session_state:
             y_test = st.session_state['y_test']
             y_pred_nb = st.session_state['y_pred_nb']
             y_pred_svm = st.session_state['y_pred_svm']
+            t_nb = st.session_state.get('t_nb', 0.0)
+            t_svm = st.session_state.get('t_svm', 0.0)
 
-            st.subheader("Metrik Evaluasi Global (Data Uji 20%)")
+            st.subheader("Matriks Evaluasi Global (Data Uji 20%)")
+            
+            col_eval1, col_eval2 = st.columns(2)
+            labels_cm = sorted(pd.concat([pd.Series(y_test), pd.Series(y_pred_nb), pd.Series(y_pred_svm)]).unique())
 
-            def get_metrics(y_true, y_pred, name):
-                return {
-                    "Model": name,
-                    "Accuracy": accuracy_score(y_true, y_pred),
-                    "Precision": precision_score(y_true, y_pred, average='weighted', zero_division=0),
-                    "Recall": recall_score(y_true, y_pred, average='weighted', zero_division=0),
-                    "F1-Score": f1_score(y_true, y_pred, average='weighted', zero_division=0),
+            with col_eval1:
+                # 1. Tabel Metrik Naive Bayes
+                metrics_nb = {
+                    "model": "Naive Bayes",
+                    "accuracy": accuracy_score(y_test, y_pred_nb),
+                    "precision": precision_score(y_test, y_pred_nb, average='weighted', zero_division=0),
+                    "recall": recall_score(y_test, y_pred_nb, average='weighted', zero_division=0),
+                    "f1": f1_score(y_test, y_pred_nb, average='weighted', zero_division=0),
+                    "train_time (s)": round(t_nb, 4)
                 }
+                st.dataframe(pd.DataFrame([metrics_nb]).set_index("model").style.format("{:.4f}"), use_container_width=True)
+                
+                # 2. Confusion Matrix Naive Bayes
+                fig_nb, ax_nb = plt.subplots(figsize=(6, 5))
+                sns.heatmap(confusion_matrix(y_test, y_pred_nb, labels=labels_cm), annot=True, fmt='d', cmap='Blues', xticklabels=labels_cm, yticklabels=labels_cm, ax=ax_nb)
+                ax_nb.set_title("Confusion Matrix Naive Bayes", fontsize=14)
+                ax_nb.set_xlabel("Predicted")
+                ax_nb.set_ylabel("Actual")
+                st.pyplot(fig_nb)
+                plt.close(fig_nb)
 
-            df_metrics = pd.DataFrame([
-                get_metrics(y_test, y_pred_nb, "Naive Bayes"),
-                get_metrics(y_test, y_pred_svm, "LinearSVC"),
-            ]).set_index("Model")
-            st.dataframe(df_metrics.style.highlight_max(axis=0, color='lightgreen').format("{:.4f}"))
+                # 3. MENGGUNAKAN ST.CODE AGAR RAPIH
+                with st.expander("Detail Classification Report (NB)"):
+                    st.code(classification_report(y_test, y_pred_nb, zero_division=0))
 
-            # Confusion Matrix
-            labels_cm = sorted(pd.concat([y_test, pd.Series(y_pred_nb), pd.Series(y_pred_svm)]).unique())
-            fig_cm, ax_cm = plt.subplots(1, 2, figsize=(12, 5))
-            sns.heatmap(confusion_matrix(y_test, y_pred_nb, labels=labels_cm),
-                        annot=True, fmt='d', cmap='Blues',
-                        xticklabels=labels_cm, yticklabels=labels_cm, ax=ax_cm[0])
-            ax_cm[0].set_title("Confusion Matrix — Naive Bayes")
-            ax_cm[0].set_xlabel("Prediksi"); ax_cm[0].set_ylabel("Aktual")
+            with col_eval2:
+                # 1. Tabel Metrik LinearSVC
+                metrics_svm = {
+                    "model": "LinearSVC",
+                    "accuracy": accuracy_score(y_test, y_pred_svm),
+                    "precision": precision_score(y_test, y_pred_svm, average='weighted', zero_division=0),
+                    "recall": recall_score(y_test, y_pred_svm, average='weighted', zero_division=0),
+                    "f1": f1_score(y_test, y_pred_svm, average='weighted', zero_division=0),
+                    "train_time (s)": round(t_svm, 4)
+                }
+                st.dataframe(pd.DataFrame([metrics_svm]).set_index("model").style.format("{:.4f}"), use_container_width=True)
+                
+                # 2. Confusion Matrix LinearSVC
+                fig_svm, ax_svm = plt.subplots(figsize=(6, 5))
+                sns.heatmap(confusion_matrix(y_test, y_pred_svm, labels=labels_cm), annot=True, fmt='d', cmap='Blues', xticklabels=labels_cm, yticklabels=labels_cm, ax=ax_svm)
+                ax_svm.set_title("Confusion Matrix LinearSVC", fontsize=14)
+                ax_svm.set_xlabel("Predicted")
+                ax_svm.set_ylabel("Actual")
+                st.pyplot(fig_svm)
+                plt.close(fig_svm)
 
-            sns.heatmap(confusion_matrix(y_test, y_pred_svm, labels=labels_cm),
-                        annot=True, fmt='d', cmap='Greens',
-                        xticklabels=labels_cm, yticklabels=labels_cm, ax=ax_cm[1])
-            ax_cm[1].set_title("Confusion Matrix — LinearSVC")
-            ax_cm[1].set_xlabel("Prediksi"); ax_cm[1].set_ylabel("Aktual")
-            st.pyplot(fig_cm)
-            plt.close(fig_cm)
+                # 3. MENGGUNAKAN ST.CODE AGAR RAPIH
+                with st.expander("Detail Classification Report (SVM)"):
+                    st.code(classification_report(y_test, y_pred_svm, zero_division=0))
 
             # ── Visualisasi TF-IDF top words ────────────────────────────────
             st.divider()
@@ -544,7 +576,7 @@ elif menu == PAGES[3]:
 
             c_tf1, c_tf2 = st.columns([1, 2])
             with c_tf1:
-                st.dataframe(df_tfidf)
+                st.dataframe(df_tfidf, use_container_width=True)
             with c_tf2:
                 fig_tf, ax_tf = plt.subplots(figsize=(8, 5))
                 sns.barplot(x='Skor TF-IDF', y='Kata', data=df_tfidf, palette='viridis',
@@ -584,7 +616,7 @@ elif menu == PAGES[3]:
                         for cls in nb_model.classes_:
                             row[f"P(kata|{cls})"] = "tidak ada di vocabulary"
                     lik_data.append(row)
-                st.dataframe(pd.DataFrame(lik_data))
+                st.dataframe(pd.DataFrame(lik_data), use_container_width=True)
 
             # ── Diagnostik SVM: Bias + Bobot kata ───────────────────────────
             st.divider()
@@ -617,13 +649,13 @@ elif menu == PAGES[3]:
                         for i in range(coef.shape[0]):
                             row[f"w (Fungsi {i})"] = "tidak ada di vocabulary"
                     svm_data.append(row)
-                st.dataframe(pd.DataFrame(svm_data))
+                st.dataframe(pd.DataFrame(svm_data), use_container_width=True)
 
             st.button("Lanjut ke Evaluasi Per Aspek →", on_click=set_page, args=(PAGES[4],))
 
     else:
         st.warning("Lakukan Pelabelan di Tab 3 terlebih dahulu.")
-
+        
 # ============================================================
 # TAB 5: EVALUASI DETAIL PER ASPEK
 # ============================================================
@@ -633,7 +665,7 @@ elif menu == PAGES[4]:
     if 'test_data_eval' in st.session_state:
         df_eval = st.session_state['test_data_eval']
 
-        # ── Metrik Global ────────────────────────────────────────────────────
+        # ── Matriks Global ────────────────────────────────────────────────────
         st.subheader("Evaluasi Global (Data Uji 20%)")
 
         def calc_metrics(y_true, y_pred, name):
@@ -651,12 +683,12 @@ elif menu == PAGES[4]:
         st.dataframe(df_global.style.highlight_max(axis=0, color='lightgreen').format("{:.2%}"))
 
         # Bar chart global
-        fig_g, ax_g = plt.subplots(figsize=(8, 4))
-        df_global.reset_index().melt(id_vars='Model', var_name='Metrik', value_name='Skor').pipe(
-            lambda d: sns.barplot(data=d, x='Metrik', y='Skor', hue='Model', palette='viridis', ax=ax_g)
+        fig_g, ax_g = plt.subplots(figsize=(8, 6))
+        df_global.reset_index().melt(id_vars='Model', var_name='Matriks', value_name='Skor').pipe(
+            lambda d: sns.barplot(data=d, x='Matriks', y='Skor', hue='Model', palette='viridis', ax=ax_g)
         )
         ax_g.set_ylim(0, 1.1)
-        ax_g.set_title("Perbandingan Metrik Global NB vs LinearSVC")
+        ax_g.set_title("Perbandingan Matriks Global NB vs SVM")
         for p in ax_g.patches:
             if p.get_height() > 0:
                 ax_g.annotate(f'{p.get_height():.2f}', (p.get_x() + p.get_width()/2, p.get_height()),
@@ -695,7 +727,7 @@ elif menu == PAGES[4]:
             lambda d: sns.barplot(data=d, x='Aspek', y='Akurasi', hue='Model', palette='coolwarm', ax=ax_asp)
         )
         ax_asp.set_ylim(0, 1.1)
-        ax_asp.set_title("Perbandingan Akurasi NB vs LinearSVC per Aspek")
+        ax_asp.set_title("Perbandingan Akurasi NB vs SVM per Aspek")
         plt.xticks(rotation=30)
         for p in ax_asp.patches:
             if p.get_height() > 0:
