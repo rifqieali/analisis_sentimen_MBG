@@ -128,7 +128,7 @@ def extract_tfidf(corpus, fit=True, vectorizer=None):
         return X, vectorizer
 
 def train_model_nb(X, y):
-    model = MultinomialNB()
+    model = MultinomialNB(alpha=1.0)
     model.fit(X, y)
     return model
 
