@@ -277,7 +277,6 @@ elif menu == PAGES[1]:
                 count_raw = len(df)
                 
                 # --- TAHAP 0: FILTER ANTI-BUZZER (Template Match) ---
-                # Membuang tweet yang sama persis (100% identik) sebelum diproses
                 df = df.drop_duplicates(subset=[col_name], keep='first').copy()
                 df['doc_id'] = range(len(df)) # Reset ulang nomor urut ID
                 count_awal = len(df)
@@ -297,13 +296,16 @@ elif menu == PAGES[1]:
                 df_exploded = df_exploded[df_exploded['segment'] != '']
                 count_segmentasi = len(df_exploded)
 
-                # 4. Stopword Removal & Stemming (Menggunakan Real Progress Bar)
+                # 4 & 5. Stopword Removal & Stemming (Progress Bar Real-time)
                 my_bar = st.progress(0)
                 total_rows = count_segmentasi
                 
                 processed_segments = []
                 for i, seg in enumerate(df_exploded['segment']):
-                    processed_segments.append(stopword_and_stem(seg))
+                    no_stop = " ".join([w for w in seg.split() if w not in final_stopwords])
+                    stemmed = stemmer.stem(no_stop) if no_stop.strip() else ""
+                    processed_segments.append(stemmed)
+                    
                     if i % max(1, total_rows // 100) == 0:
                         my_bar.progress(min(i / total_rows, 1.0))
                 my_bar.progress(1.0)
@@ -317,51 +319,82 @@ elif menu == PAGES[1]:
 
                 # Simpan metrik ke memori
                 st.session_state['prep_stats'] = {
-                    "awal": count_awal, "clean": count_clean, "norm": count_norm,
-                    "segmentasi": count_segmentasi, "final": count_final
+                    "raw": count_raw, "awal": count_awal, "clean": count_clean, 
+                    "norm": count_norm, "segmentasi": count_segmentasi, "final": count_final
                 }
 
-        # --- TAMPILKAN DASHBOARD & BEFORE-AFTER ---
+        # --- TAMPILKAN STATISTIK DATA (RINGKAS & TIDAK BESAR) ---
         if st.session_state.get('preprocessing_done', False):
             stats = st.session_state.get('prep_stats', {})
             if stats:
                 st.success("Pipeline Preprocessing selesai!")
                 
-                st.markdown("### Statistik Before-After Baris Data")
-                col1, col2, col3, col4, col5 = st.columns(5)
-                col1.metric("1. Data Awal", f"{stats['awal']} baris")
-                col2.metric("2. Cleaning", f"{stats['clean']} baris")
-                col3.metric("3. Normalisasi", f"{stats['norm']} baris")
-                
-                diff_seg = stats['segmentasi'] - stats['norm']
-                col4.metric("4. Segmentasi", f"{stats['segmentasi']} baris", delta=f"+{diff_seg} pecahan", delta_color="normal")
-                
-                diff_final = stats['final'] - stats['segmentasi']
-                col5.metric("5. Stopword & Stem", f"{stats['final']} baris", delta=f"{diff_final} dibuang", delta_color="inverse")
+                st.markdown(f"""
+                **Statistik Perubahan Jumlah Data:**
+                * **Data Mentah Awal:** `{stats['raw']}` baris
+                * **Setelah Filter Duplikat (Anti-Buzzer):** `{stats['awal']}` baris *(Dibuang {stats['raw'] - stats['awal']} baris)*
+                * **Setelah Cleaning & Normalisasi:** `{stats['norm']}` baris
+                * **Setelah Segmentasi (Pecah Konjungsi):** `{stats['segmentasi']}` segmen *(Bertambah {stats['segmentasi'] - stats['norm']} pecahan)*
+                * **Final (Setelah Stopword & Stemming):** `{stats['final']}` segmen bersih *(Dibuang {stats['segmentasi'] - stats['final']} segmen kosong/tak bermakna)*
+                """)
 
             # --- TAMPILAN TRACE TEXT (BEFORE-AFTER PER TAHAPAN) ---
             st.divider()
-            st.markdown("### Jejak Perubahan Teks (Before-After)")
-            st.caption("Mendemonstrasikan bagaimana kalimat diubah langkah demi langkah (diambil 3 sampel pertama).")
+            st.markdown("### Jejak Perubahan Teks Secara Rinci (Before-After)")
+            st.caption("Membedah transformasi kalimat langkah demi langkah sesuai urutan pipeline NLP (diambil 3 sampel pertama).")
             
             sample_df = df.head(3)
             for idx, row in sample_df.iterrows():
                 raw_text = str(row[col_name])
-                c_text = clean_text(raw_text)
-                n_text = normalize_text(c_text)
+                
+                # 1. Cleaning
+                c_text = re.sub(r'@[A-Za-z0-9_]+', ' ', raw_text)
+                c_text = re.sub(r'#\w+', ' ', c_text)
+                c_text = re.sub(r'http\S+|www\S+', ' ', c_text)
+                c_text = re.sub(r'\d+', ' ', c_text)
+                c_text = c_text.translate(str.maketrans('', '', string.punctuation))
+                c_text = re.sub(r'\s+', ' ', c_text).strip()
+                
+                # 2. Case Folding
+                cf_text = c_text.lower()
+                
+                # 3. Tokenization
+                tok_list = cf_text.split()
+                
+                # 4. Normalization
+                norm_list = [norm_dict.get(w, w) for w in tok_list]
+                n_text = " ".join(norm_list)
+                
+                # 5. Segmentasi
                 s_list = segmentasi_kalimat(n_text)
-                final_list = [stopword_and_stem(s) for s in s_list if stopword_and_stem(s).strip()]
+                
+                # 6 & 7. Stopword & Stemming
+                stopword_results = []
+                stem_results = []
+                
+                for s in s_list:
+                    no_stopword = " ".join([w for w in s.split() if w not in final_stopwords])
+                    if no_stopword.strip():
+                        stopword_results.append(no_stopword)
+                        stemmed = stemmer.stem(no_stopword)
+                        if stemmed.strip():
+                            stem_results.append(stemmed)
                 
                 with st.expander(f"Sampel {idx+1}: {raw_text[:60]}..."):
                     st.markdown(f"**0. Teks Asli:**<br> `{raw_text}`", unsafe_allow_html=True)
-                    st.markdown(f"**1. Cleaning & Case Folding:**<br> `{c_text}`", unsafe_allow_html=True)
-                    st.markdown(f"**2. Normalisasi (Kata Baku):**<br> `{n_text}`", unsafe_allow_html=True)
+                    st.markdown(f"**1. Cleaning (Hapus Simbol/Angka):**<br> `{c_text}`", unsafe_allow_html=True)
+                    st.markdown(f"**2. Case Folding (Huruf Kecil):**<br> `{cf_text}`", unsafe_allow_html=True)
+                    st.markdown(f"**3. Tokenization (Pemecahan Array):**<br> `{tok_list}`", unsafe_allow_html=True)
+                    st.markdown(f"**4. Normalization (Kata Baku):**<br> `{n_text}`", unsafe_allow_html=True)
                     
                     seg_str = "".join([f"<li><code>{s}</code></li>" for s in s_list])
-                    st.markdown(f"**3. Segmentasi (Pecah Konjungsi):**<ul>{seg_str}</ul>", unsafe_allow_html=True)
+                    st.markdown(f"**5. Segmentasi (Pecah Konjungsi):**<ul>{seg_str}</ul>", unsafe_allow_html=True)
                     
-                    fin_str = "".join([f"<li><code>{f}</code></li>" for f in final_list])
-                    st.markdown(f"**4. Stopword & Stemming Sastrawi:**<ul>{fin_str}</ul>", unsafe_allow_html=True)
+                    stop_str = "".join([f"<li><code>{s}</code></li>" for s in stopword_results])
+                    st.markdown(f"**6. Stopword Removal:**<ul>{stop_str}</ul>", unsafe_allow_html=True)
+                    
+                    fin_str = "".join([f"<li><code>{f}</code></li>" for f in stem_results])
+                    st.markdown(f"**7. Stemming Sastrawi:**<ul>{fin_str}</ul>", unsafe_allow_html=True)
 
             st.divider()
             st.markdown("**Preview Hasil Data Akhir:**")
