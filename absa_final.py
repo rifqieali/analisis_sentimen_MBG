@@ -273,29 +273,103 @@ elif menu == PAGES[1]:
         col_name = st.selectbox("Pilih kolom teks:", df.columns)
 
         if st.button("Mulai Preprocessing (Semua Data)"):
-            with st.spinner("Cleaning → Normalisasi → Segmentasi → Stopword → Stemming ..."):
-                my_bar = st.progress(0)
+            with st.spinner("Menjalankan pipeline preprocessing bertahap..."):
+                count_raw = len(df)
+                
+                # --- TAHAP 0: FILTER ANTI-BUZZER (Template Match) ---
+                # Membuang tweet yang sama persis (100% identik) sebelum diproses
+                df = df.drop_duplicates(subset=[col_name], keep='first').copy()
+                df['doc_id'] = range(len(df)) # Reset ulang nomor urut ID
+                count_awal = len(df)
 
-                for percent_complete in range(100):
-                    time.sleep(0.1) # Simulasi proses
-                    my_bar.progress(percent_complete + 1)
-                records = []
-                df['doc_id'] = df.index
-                df['segmen_list'] = df[col_name].apply(preprocess_text)
+                # 1. Cleaning & Case Folding
+                df['text_clean'] = df[col_name].apply(clean_text)
+                count_clean = len(df)
+
+                # 2. Tokenisasi & Normalisasi
+                df['text_norm'] = df['text_clean'].apply(normalize_text)
+                count_norm = len(df)
+
+                # 3. Segmentasi (Memecah list menjadi baris baru / explode)
+                df['segmen_list'] = df['text_norm'].apply(segmentasi_kalimat)
                 df_exploded = df.explode('segmen_list').dropna(subset=['segmen_list'])
-                df_exploded = df_exploded.rename(columns={'segmen_list': 'segment'})
+                df_exploded['segment'] = df_exploded['segmen_list'].astype(str).str.strip()
+                df_exploded = df_exploded[df_exploded['segment'] != '']
+                count_segmentasi = len(df_exploded)
+
+                # 4. Stopword Removal & Stemming (Menggunakan Real Progress Bar)
+                my_bar = st.progress(0)
+                total_rows = count_segmentasi
+                
+                processed_segments = []
+                for i, seg in enumerate(df_exploded['segment']):
+                    processed_segments.append(stopword_and_stem(seg))
+                    if i % max(1, total_rows // 100) == 0:
+                        my_bar.progress(min(i / total_rows, 1.0))
+                my_bar.progress(1.0)
+                
+                df_exploded['segment'] = processed_segments
                 df_exploded = df_exploded[df_exploded['segment'].str.strip() != ''].reset_index(drop=True)
+                count_final = len(df_exploded)
+
                 st.session_state['df_exploded'] = df_exploded
                 st.session_state['preprocessing_done'] = True
 
-            st.success(f"Selesai! **{len(df)}** dokumen → **{len(df_exploded)}** segmen.")
-            st.dataframe(df_exploded[['doc_id', col_name, 'segment']].head(10))
+                # Simpan metrik ke memori
+                st.session_state['prep_stats'] = {
+                    "awal": count_awal, "clean": count_clean, "norm": count_norm,
+                    "segmentasi": count_segmentasi, "final": count_final
+                }
 
-        if st.session_state['preprocessing_done']:
+        # --- TAMPILKAN DASHBOARD & BEFORE-AFTER ---
+        if st.session_state.get('preprocessing_done', False):
+            stats = st.session_state.get('prep_stats', {})
+            if stats:
+                st.success("Pipeline Preprocessing selesai!")
+                
+                st.markdown("### Statistik Before-After Baris Data")
+                col1, col2, col3, col4, col5 = st.columns(5)
+                col1.metric("1. Data Awal", f"{stats['awal']} baris")
+                col2.metric("2. Cleaning", f"{stats['clean']} baris")
+                col3.metric("3. Normalisasi", f"{stats['norm']} baris")
+                
+                diff_seg = stats['segmentasi'] - stats['norm']
+                col4.metric("4. Segmentasi", f"{stats['segmentasi']} baris", delta=f"+{diff_seg} pecahan", delta_color="normal")
+                
+                diff_final = stats['final'] - stats['segmentasi']
+                col5.metric("5. Stopword & Stem", f"{stats['final']} baris", delta=f"{diff_final} dibuang", delta_color="inverse")
+
+            # --- TAMPILAN TRACE TEXT (BEFORE-AFTER PER TAHAPAN) ---
             st.divider()
+            st.markdown("### Jejak Perubahan Teks (Before-After)")
+            st.caption("Mendemonstrasikan bagaimana kalimat diubah langkah demi langkah (diambil 3 sampel pertama).")
+            
+            sample_df = df.head(3)
+            for idx, row in sample_df.iterrows():
+                raw_text = str(row[col_name])
+                c_text = clean_text(raw_text)
+                n_text = normalize_text(c_text)
+                s_list = segmentasi_kalimat(n_text)
+                final_list = [stopword_and_stem(s) for s in s_list if stopword_and_stem(s).strip()]
+                
+                with st.expander(f"Sampel {idx+1}: {raw_text[:60]}..."):
+                    st.markdown(f"**0. Teks Asli:**<br> `{raw_text}`", unsafe_allow_html=True)
+                    st.markdown(f"**1. Cleaning & Case Folding:**<br> `{c_text}`", unsafe_allow_html=True)
+                    st.markdown(f"**2. Normalisasi (Kata Baku):**<br> `{n_text}`", unsafe_allow_html=True)
+                    
+                    seg_str = "".join([f"<li><code>{s}</code></li>" for s in s_list])
+                    st.markdown(f"**3. Segmentasi (Pecah Konjungsi):**<ul>{seg_str}</ul>", unsafe_allow_html=True)
+                    
+                    fin_str = "".join([f"<li><code>{f}</code></li>" for f in final_list])
+                    st.markdown(f"**4. Stopword & Stemming Sastrawi:**<ul>{fin_str}</ul>", unsafe_allow_html=True)
+
+            st.divider()
+            st.markdown("**Preview Hasil Data Akhir:**")
+            st.dataframe(st.session_state['df_exploded'][['doc_id', col_name, 'segment']].head(10), use_container_width=True)
+
             csv_data = st.session_state['df_exploded'].to_csv(index=False).encode('utf-8')
             st.download_button(
-                "📥 Download Hasil Preprocessing (CSV)",
+                "Download Hasil Preprocessing (CSV)",
                 data=csv_data,
                 file_name="hasil_preprocessing.csv",
                 mime="text/csv"
