@@ -522,7 +522,7 @@ elif menu == PAGES[3]:
             except Exception:
                 pass
 
-        remove_neutral = st.checkbox("Hapus data Netral", value=True)
+        remove_neutral = st.checkbox("Hapus data Netral dari training?", value=True)
         df_model = df_exp[df_exp['sentiment_label'] != 'Netral'].copy() if remove_neutral else df_exp.copy()
 
         if st.button("Mulai Training Model"):
@@ -558,7 +558,7 @@ elif menu == PAGES[3]:
                 y_pred_nb = nb.predict(X_test_vec)
                 
             with col_prog2:
-                st.write("**Melatih SVM...**")
+                st.write("**Melatih LinearSVC...**")
                 pb_svm = st.progress(0)
                 t_svm = time.perf_counter()
                 svm = LinearSVC()
@@ -691,6 +691,100 @@ elif menu == PAGES[3]:
                 ax_tf.set_title("Top 10 Kata TF-IDF (Data Uji)")
                 st.pyplot(fig_tf)
                 plt.close(fig_tf)
+                
+            # ── Bedah Perhitungan Matematis TF-IDF ──────────────────────────
+            st.divider()
+            st.subheader("Bedah Perhitungan Matematis TF-IDF (Teks Uji)")
+            st.info("💡 **FAKTA UNTUK SIDANG SKRIPSI:** Scikit-Learn tidak menghitung 'TF × IDF' secara mentah. Karena Anda menyetel `sublinear_tf=True`, rumusnya berubah menjadi **(1 + log(TF)) × IDF**. Setelah itu, hasilnya dinormalisasi (L2 Norm) agar model tidak bias terhadap kalimat yang terlalu panjang.")
+            
+            contoh_teks = st.text_input("Masukkan teks contoh untuk membedah perhitungan mesin:", value="dukung program makan gizi gratis mantap")
+            
+            if contoh_teks:
+                vec = st.session_state['vectorizer']
+                idf_dict = dict(zip(vec.get_feature_names_out(), vec.idf_))
+                
+                # Mendapatkan N_train (Estimasi jumlah dokumen latih dari 80:20 split)
+                N_train = len(st.session_state['test_data_eval']) * 4
+                
+                # Tokenisasi sederhana
+                tokens = contoh_teks.lower().split()
+                from collections import Counter
+                tf_raw = Counter(tokens)
+                
+                table_data = []
+                bobot_mentah_list = []
+                
+                for kata, count in tf_raw.items():
+                    if kata in idf_dict:
+                        idf_val = idf_dict[kata]
+                        # Reverse-engineer nilai DF aktual dari rumus smooth_idf
+                        # idf = ln((N+1)/(DF+1)) + 1  --> DF = (N+1)/exp(idf-1) - 1
+                        df_val = int(round((N_train + 1) / np.exp(idf_val - 1) - 1))
+                        
+                        # Rumus Sublinear TF: 1 + log(tf)
+                        tf_sublinear = 1 + np.log(count)
+                        
+                        # TF-IDF mentah (sebelum L2 Normalization)
+                        bobot_mentah = tf_sublinear * idf_val
+                        bobot_mentah_list.append(bobot_mentah)
+                        
+                        table_data.append({
+                            "Token Kata": kata,
+                            "Nilai TF (Count)": count,
+                            "Sublinear TF (1+log)": round(tf_sublinear, 4),
+                            "Nilai DF Aktual": df_val,
+                            "Perhitungan IDF": round(idf_val, 4),
+                            "TF × IDF Mentah": round(bobot_mentah, 4)
+                        })
+                    else:
+                        table_data.append({
+                            "Token Kata": kata,
+                            "Nilai TF (Count)": count,
+                            "Sublinear TF (1+log)": 0,
+                            "Nilai DF Aktual": 0,
+                            "Perhitungan IDF": 0,
+                            "TF × IDF Mentah": 0
+                        })
+                
+                st.dataframe(pd.DataFrame(table_data), use_container_width=True)
+                
+                if bobot_mentah_list:
+                    l2_norm = np.sqrt(sum([x**2 for x in bobot_mentah_list]))
+                    st.markdown(f"**🔹 Faktor L2 Normalization (Pembagi):** `{round(l2_norm, 4)}`")
+                    st.caption(f"*Bobot akhir (Final Weight) yang diekstraksi ke dalam matriks algoritma Naive Bayes & SVM didapatkan dengan membagi setiap kolom 'TF × IDF Mentah' dengan angka {round(l2_norm, 4)} ini.*")
+
+            # ── Diagnostik SVM: Bias + Bobot kata ───────────────────────────
+            st.divider()
+            st.subheader("Diagnostik LinearSVC — Bias & Bobot Kata")
+
+            svm_model = st.session_state['model_svm']
+            tfidf_vec_svm = st.session_state['vectorizer']
+
+            bias_df = pd.DataFrame({
+                "Decision Function": [f"Fungsi ke-{i}" for i in range(len(svm_model.intercept_))],
+                "Nilai Bias (b)": svm_model.intercept_
+            })
+            st.markdown("**Nilai Bias (Intercept) SVM:**")
+            st.dataframe(bias_df)
+
+            st.markdown("**Bobot Kata (Koefisien w) per Decision Function:**")
+            input_kata_svm = st.text_input("Masukkan kata uji SVM (pisahkan koma):",
+                                           value="dukung, makan, gizi, gratis, bagus, jelek", key="svm_kata")
+            if input_kata_svm:
+                kata_svm = [k.strip().lower() for k in input_kata_svm.split(',') if k.strip()]
+                coef = np.array(svm_model.coef_)
+                svm_data = []
+                for kata in kata_svm:
+                    row = {"Kata": kata}
+                    if kata in tfidf_vec_svm.vocabulary_:
+                        idx = tfidf_vec_svm.vocabulary_[kata]
+                        for i in range(coef.shape[0]):
+                            row[f"w (Fungsi {i})"] = coef[i, idx]
+                    else:
+                        for i in range(coef.shape[0]):
+                            row[f"w (Fungsi {i})"] = "tidak ada di vocabulary"
+                    svm_data.append(row)
+                st.dataframe(pd.DataFrame(svm_data), use_container_width=True)
 
             st.button("Lanjut ke Evaluasi Per Aspek →", on_click=set_page, args=(PAGES[4],))
 
