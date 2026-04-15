@@ -134,8 +134,8 @@ ASPEK_DICT = {
         'alokasi', 'transparan'
     ],
 }
-KONJUNGSI = r'\b(tetapi|namun|dan|karena|meskipun|tapi|sedangkan)\b'
-KONJUNGSI_SET = {'tetapi', 'namun', 'dan', 'karena', 'meskipun', 'tapi', 'sedangkan'}
+KONJUNGSI = r'\b(tetapi|namun|meskipun|tapi|sedangkan|cuman|cuma|sayangnya|padahal|walau|walaupun|pasalnya)\b'
+KONJUNGSI_SET = {'tetapi', 'namun', 'meskipun', 'tapi', 'sedangkan', 'cuman', 'cuma', 'sayangnya', 'padahal', 'walau', 'walaupun', 'pasalnya'}
 
 TFIDF_PARAMS = {
     'max_features': 3000,

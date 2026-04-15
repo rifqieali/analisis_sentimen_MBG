@@ -134,8 +134,8 @@ ASPEK_DICT = {
         'alokasi', 'transparan'
     ],
 }
-KONJUNGSI = r'\b(tetapi|namun|dan|karena|meskipun|tapi|sedangkan)\b'
-KONJUNGSI_SET = {'tetapi', 'namun', 'dan', 'karena', 'meskipun', 'tapi', 'sedangkan'}
+KONJUNGSI = r'\b(tetapi|namun|meskipun|tapi|sedangkan|cuman|cuma|sayangnya|padahal|walau|walaupun|pasalnya)\b'
+KONJUNGSI_SET = {'tetapi', 'namun', 'meskipun', 'tapi', 'sedangkan', 'cuman', 'cuma', 'sayangnya', 'padahal', 'walau', 'walaupun', 'pasalnya'}
 
 TFIDF_PARAMS = {
     'max_features': 3000,
@@ -444,10 +444,7 @@ elif menu == PAGES[2]:
                 st.subheader("Jumlah Segmen per Sentimen")
                 st.bar_chart(df['sentiment_label'].value_counts())
 
-            st.dataframe(df[['segment', 'sentiment_label', 'aspect_list']].head(10))
-
             # Contoh per aspek
-            st.divider()
             st.subheader("Contoh Segmen per Aspek")
             df_asp2 = df.explode('aspect_list')
             unique_asp = df_asp2['aspect_list'].dropna().unique()
@@ -457,23 +454,6 @@ elif menu == PAGES[2]:
                     with tabs_asp[i]:
                         subset = df_asp2[df_asp2['aspect_list'] == asp][['segment', 'sentiment_label']].head(5)
                         st.table(subset.reset_index(drop=True))
-
-            # Frekuensi kata per sentimen
-            st.divider()
-            st.subheader("Top 10 Kata per Sentimen")
-            sentiments = df['sentiment_label'].unique()
-            cols_freq = st.columns(len(sentiments))
-            for idx, sent in enumerate(sentiments):
-                with cols_freq[idx]:
-                    st.markdown(f"**{sent}**")
-                    all_words = " ".join(df[df['sentiment_label'] == sent]['segment'].astype(str)).split()
-                    if all_words:
-                        freq = pd.Series(all_words).value_counts().head(10)
-                        fig_f, ax_f = plt.subplots(figsize=(5, 5))
-                        sns.barplot(x=freq.values, y=freq.index, ax=ax_f, palette='viridis', hue=freq.index, legend=False)
-                        ax_f.set_xlabel("Frekuensi")
-                        st.pyplot(fig_f)
-                        plt.close(fig_f)
 
             # WordCloud
             st.divider()
@@ -504,7 +484,7 @@ elif menu == PAGES[2]:
 # TAB 4: MODELING (TRAINING)
 # ============================================================
 elif menu == PAGES[3]:
-    st.header("4. Training Model (NB vs LinearSVC)")
+    st.header("4. Training Model (MultinomialNB vs LinearSVC)")
 
     df_exp = st.session_state.get('df_exploded')
     if df_exp is not None and 'sentiment_label' in df_exp.columns:
@@ -622,7 +602,7 @@ elif menu == PAGES[3]:
             with col_eval1:
                 # 1. Tabel Metrik Naive Bayes
                 metrics_nb = {
-                    "model": "Naive Bayes",
+                    "model": "Multinomial NB",
                     "accuracy": accuracy_score(y_test, y_pred_nb),
                     "precision": precision_score(y_test, y_pred_nb, average='weighted', zero_division=0),
                     "recall": recall_score(y_test, y_pred_nb, average='weighted', zero_division=0),
@@ -634,7 +614,7 @@ elif menu == PAGES[3]:
                 # 2. Confusion Matrix Naive Bayes
                 fig_nb, ax_nb = plt.subplots(figsize=(6, 5))
                 sns.heatmap(confusion_matrix(y_test, y_pred_nb, labels=labels_cm), annot=True, fmt='d', cmap='Blues', xticklabels=labels_cm, yticklabels=labels_cm, ax=ax_nb)
-                ax_nb.set_title("Confusion Matrix Naive Bayes", fontsize=14)
+                ax_nb.set_title("Confusion Matrix Multinomial Naive Bayes", fontsize=14)
                 ax_nb.set_xlabel("Predicted")
                 ax_nb.set_ylabel("Actual")
                 st.pyplot(fig_nb)
@@ -706,41 +686,7 @@ elif menu == PAGES[4]:
     if 'test_data_eval' in st.session_state:
         df_eval = st.session_state['test_data_eval']
 
-        # ── Matriks Global ────────────────────────────────────────────────────
-        st.subheader("Evaluasi Global (Data Uji 20%)")
-
-        def calc_metrics(y_true, y_pred, name):
-            return {
-                "Model": name,
-                "Accuracy": accuracy_score(y_true, y_pred),
-                "Precision": precision_score(y_true, y_pred, average='weighted', zero_division=0),
-                "Recall": recall_score(y_true, y_pred, average='weighted', zero_division=0),
-                "F1-Score": f1_score(y_true, y_pred, average='weighted', zero_division=0),
-            }
-
-        global_nb = calc_metrics(df_eval['y_true'], df_eval['pred_nb'], "Naive Bayes")
-        global_svm = calc_metrics(df_eval['y_true'], df_eval['pred_svm'], "LinearSVC")
-        df_global = pd.DataFrame([global_nb, global_svm]).set_index("Model")
-        st.dataframe(df_global.style.highlight_max(axis=0, color='lightgreen').format("{:.2%}"))
-
-        # Bar chart global
-        fig_g, ax_g = plt.subplots(figsize=(8, 6))
-        df_global.reset_index().melt(id_vars='Model', var_name='Matriks', value_name='Skor').pipe(
-            lambda d: sns.barplot(data=d, x='Matriks', y='Skor', hue='Model', palette='viridis', ax=ax_g)
-        )
-        ax_g.set_ylim(0, 1.1)
-        ax_g.set_title("Perbandingan Matriks Global NB vs SVM")
-        for p in ax_g.patches:
-            if p.get_height() > 0:
-                ax_g.annotate(f'{p.get_height():.2f}', (p.get_x() + p.get_width()/2, p.get_height()),
-                              ha='center', va='bottom', fontsize=9)
-        st.pyplot(fig_g)
-        plt.close(fig_g)
-
-        st.divider()
-
         # ── Evaluasi Per Aspek ───────────────────────────────────────────────
-        st.subheader("Evaluasi Per Aspek")
         df_exp_eval = df_eval.explode('aspect_list') if 'aspect_list' in df_eval.columns else df_eval.copy()
 
         asp_col = 'aspect_list' if 'aspect_list' in df_exp_eval.columns else 'aspek'
@@ -779,7 +725,6 @@ elif menu == PAGES[4]:
         plt.close(fig_asp)
 
         # ── WordCloud Per Aspek ──────────────────────────────────────────────
-        st.divider()
         st.subheader("WordCloud per Aspek")
         aspek_list = df_asp_met['Aspek'].tolist()
         if aspek_list:
