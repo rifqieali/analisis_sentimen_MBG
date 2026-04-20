@@ -22,7 +22,8 @@ import joblib
 import os
 import warnings
 from io import BytesIO
-
+import torch
+from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
 import nltk
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
@@ -44,6 +45,27 @@ st.set_page_config(page_title="Analisis Sentimen MBG", layout="wide", page_icon=
 # ============================================================
 # RESOURCE LOADING (CACHED)
 # ============================================================
+@st.cache_resource
+def load_roberta():
+    local_model_path = "./roberta_sentiment_local"
+    MODEL_NAME = "w11wo/indonesian-roberta-base-sentiment-classifier"
+
+    if not os.path.exists(local_model_path):
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+        tokenizer.save_pretrained(local_model_path)
+        model.save_pretrained(local_model_path)
+
+    return pipeline(
+        "text-classification",
+        model=local_model_path,
+        tokenizer=local_model_path,
+        device=-1,
+        truncation=True,
+        max_length=128
+    )
+classifier = load_roberta()
+
 @st.cache_resource
 def load_resources():
     try:
@@ -114,127 +136,6 @@ lexicon = load_inset_lexicon()
 # ============================================================
 # KONSTANTA
 # ============================================================
-DOMAIN_LEXICON = {
-    # ── KUALITAS ──────────────────────────────────────────
-    "aroma"        :  2,
-    "aromanya"     :  2,
-    "lauk"         :  1,
-    "higienis"     :  3,
-    "higienitas"   :  3,
-    "keracunan"    : -5,
-    "mentah"       : -3,
-    "matang"       :  2,
-    "bergizi"      :  3,
-    "bernutrisi"   :  3,
-    "lezat"        :  5,
-    "basi"         : -4,
-    "ulat"         : -5,
-    "porsi"        :  1,
-    "nikmat"       :  3,   # TAMBAHAN: tidak ada atau lemah di InSet
-    "mantap"       :  3,   # TAMBAHAN: slang positif Twitter Indonesia
-    "maknyus"      :  4,   # TAMBAHAN: ekspresi sangat enak, tidak ada di InSet
-    "enaknya"      :  2,   # TAMBAHAN: sufiks -nya pada kata positif
-    "enak"         :  3,   # TAMBAHAN: pastikan eksplisit
-    "kualitas baik":  3,   # TAMBAHAN: bigram → pindah ke BIGRAM_OVERRIDE
-    "tidak layak"  : -4,
-    # ── LAYANAN ───────────────────────────────────────────
-    "terlambat"    : -3,
-    "molor"        : -3,
-    "katering"     :  1,
-    "vendor"       :  1,
-    "terdistribusi":  2,
-    "pelosok"      :  1,
-    "merata"       :  3,
-    "tepat waktu"  :  3,
-    "tidak merata" : -4,
-    "terjangkau"   :  2,   # TAMBAHAN: sering muncul konteks layanan/harga
-    "terpencil"    :  1,   # TAMBAHAN: netral, bermakna jika "sampai terpencil"
-    "responsif"    :  2,   # TAMBAHAN: tidak ada di InSet
-    "sigap"        :  2,   # TAMBAHAN: tidak ada di InSet
-    # ── ANGGARAN ──────────────────────────────────────────
-    "markup"       : -4,
-    "disunat"      : -4,
-    "dikorupsi"    : -5,
-    "diselewengkan": -5,
-    "tepat sasaran":  3,
-    "tidak tepat sasaran": -4,
-    "fiktif"       : -4,   # TAMBAHAN: "proyek fiktif", tidak ada di InSet
-    "gelap"        : -3,   # TAMBAHAN: "dana gelap", konteks korupsi
-    "disalahgunakan": -4,  # TAMBAHAN: tidak ada di InSet
-    "akuntabel"    :  3,   # TAMBAHAN: tidak ada di InSet
-    "subsidi"      :  1,   # TAMBAHAN: netral-positif konteks anggaran
-}
-
-BIGRAM_OVERRIDE = {
-    # ── Intensifier positif (kata dasar positif + penguat) ──
-    "enak banget"      :  4,
-    "enak sekali"      :  4,
-    "enak bgt"         :  4,
-    "sangat enak"      :  4,
-    "sangat bagus"     :  4,
-    "sangat baik"      :  4,
-    "sangat membantu"  :  4,
-    "sangat bermanfaat":  4,
-    "sangat merata"    :  4,
-    "suka banget"      :  4,
-    "suka sekali"      :  4,
-    "sangat suka"      :  4,
-    "mantap banget"    :  4,
-    "mantap sekali"    :  4,
-    "bagus banget"     :  4,
-    "bagus sekali"     :  4,
-    # ── Intensifier negatif (kata dasar negatif + penguat) ──
-    "sangat buruk"     : -4,
-    "sangat jelek"     : -4,
-    "sangat lambat"    : -4,
-    "sangat telat"     : -4,
-    "sangat mahal"     : -4,
-    "parah banget"     : -4,
-    "parah sekali"     : -4,
-    "buruk banget"     : -4,
-    "jelek banget"     : -4,
-    # ── Konteks positif dari kata dasar negatif di InSet ────
-    "bau enak"         :  2,
-    "bau harum"        :  3,
-    "bau wangi"        :  3,
-    "bau sedap"        :  2,
-    # ── Bigram negatif domain MBG ───────────────────────────
-    "tidak merata"     : -4,
-    "tidak layak"      : -4,
-    "tidak higienis"   : -4,
-    "tidak sehat"      : -3,
-    "tidak tepat"      : -2,
-    "tidak bermanfaat" : -3,
-    "tidak membantu"   : -3,
-    "tidak transparan" : -3,
-    "kurang enak"      : -2,
-    "kurang bersih"    : -2,
-    "kurang merata"    : -3,
-    "kurang baik"      : -2,
-    "kurang memadai"   : -3,
-    "kurang layak"     : -3,
-    # ── Bigram positif domain MBG ───────────────────────────
-    "tepat sasaran"    :  3,
-    "tepat waktu"      :  3,
-    "kualitas baik"    :  3,
-    "kualitas bagus"   :  3,
-    "gizi cukup"       :  3,
-    "sangat terbantu"  :  4,
-}
-
-ABSOLUTE_NEGATIF = {
-    'korupsi', 'keracunan', 'basi', 'ulat', 'markup',
-    'sunat', 'bocor', 'hambar', 'mentah',
-    'fiktif', 'disalahgunakan', 'diselewengkan',  # TAMBAHAN
-}
-
-ABSOLUTE_POSITIF = {
-    'terbantu', 'kenyang', 'sehat', 'lezat', 'merata',
-    'bermanfaat', 'membantu',                         # TAMBAHAN
-}
-
-# Gabungkan: domain lexicon override InSet untuk kata yang konflik
-final_lexicon = {**lexicon, **DOMAIN_LEXICON}
 
 ASPEK_DICT = {
     'Kualitas': [
@@ -307,53 +208,19 @@ def get_aspects(text: str) -> list:
     found = [asp for asp, keys in ASPEK_DICT.items() if not tokens.isdisjoint(keys)]
     return found if found else ['Lainnya']
 
-def determine_sentiment(text: str) -> str:
-    if not isinstance(text, str):
+def determine_sentiment_roberta(text: str, classifier) -> str:
+    if not isinstance(text, str) or not text.strip():
         return 'Netral'
-
-    words = text.split()
-    tokens_set = set(words)
-    score = 0
-
-    # ── Helper: cek apakah kata di posisi i dinegasi ──────────
-    def is_negated(i):
-        # Cek 1-3 kata sebelumnya
-        for j in range(max(0, i - 3), i):
-            if words[j] in negation_words:
-                return True
-        return False
-
-    # ── 1. ABSOLUTE NEGATIF (dengan cek negasi) ───────────────
-    for i, word in enumerate(words):
-        if word in ABSOLUTE_NEGATIF:
-            if not is_negated(i):
-                return 'Negatif'   # hanya jika tidak dinegasi
-
-    # ── 2. ABSOLUTE POSITIF (dengan cek negasi) ───────────────
-    for i, word in enumerate(words):
-        if word in ABSOLUTE_POSITIF:
-            if not is_negated(i):
-                return 'Positif'
-
-    # ── 3. BIGRAM OVERRIDE ────────────────────────────────────
-    for i in range(len(words) - 1):
-        bigram = words[i] + " " + words[i+1]
-        if bigram in BIGRAM_OVERRIDE:
-            score += BIGRAM_OVERRIDE[bigram]
-
-    # ── 4. UNIGRAM LEXICON ────────────────────────────────────
-    for i, word in enumerate(words):
-        if i > 0 and (words[i-1] + " " + word) in BIGRAM_OVERRIDE:
-            continue
-        if word in final_lexicon:
-            val = final_lexicon[word]
-            if is_negated(i):
-                val = -val
-            score += val
-
-    if score >= 0:
-        return 'Positif'
-    return 'Negatif'
+    try:
+        result = classifier(text[:512])[0]
+        label = result['label'].lower()
+        if 'pos' in label:
+            return 'Positif'
+        elif 'neg' in label:
+            return 'Negatif'
+        return 'Netral'
+    except Exception:
+        return 'Netral'
 
 # ============================================================
 # SESSION STATE & NAVIGASI
@@ -372,6 +239,9 @@ for key, default in [
     ('df_raw', None),
     ('df_exploded', None),
     ('preprocessing_done', False),
+    ('labeling_done', False),
+    ('df_neutral_handled', None),
+    ('neutral_action', None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -403,6 +273,9 @@ if menu == PAGES[0]:
             st.session_state['df_raw'] = df
             st.session_state['df_exploded'] = None
             st.session_state['preprocessing_done'] = False
+            st.session_state['labeling_done'] = False
+            st.session_state['df_neutral_handled'] = None
+            st.session_state['neutral_action'] = None
             st.success(f"Data mentah dimuat: **{len(df)}** baris.")
             st.dataframe(df.head())
             st.button("Lanjut ke Preprocessing →", on_click=set_page, args=(PAGES[1],))
@@ -413,6 +286,9 @@ if menu == PAGES[0]:
                 st.session_state['df_exploded'] = df
                 st.session_state['df_raw'] = None
                 st.session_state['preprocessing_done'] = True
+                st.session_state['labeling_done'] = False
+                st.session_state['df_neutral_handled'] = None
+                st.session_state['neutral_action'] = None
                 st.success(f"Data preprocessing dimuat: **{len(df)}** segmen.")
                 st.dataframe(df.head())
                 st.button("Lanjut ke Labeling →", on_click=set_page, args=(PAGES[2],))
@@ -472,6 +348,9 @@ elif menu == PAGES[1]:
 
                 st.session_state['df_exploded'] = df_exploded
                 st.session_state['preprocessing_done'] = True
+                st.session_state['labeling_done'] = False
+                st.session_state['df_neutral_handled'] = None
+                st.session_state['neutral_action'] = None
 
                 # Simpan metrik ke memori
                 st.session_state['prep_stats'] = {
@@ -576,13 +455,57 @@ elif menu == PAGES[2]:
     if st.session_state['df_exploded'] is not None:
         df = st.session_state['df_exploded']
 
-        if st.button("Jalankan Pelabelan & Aspek"):
-            with st.spinner("Menentukan sentimen dan aspek per segmen..."):
-                df['sentiment_label'] = df['segment'].apply(determine_sentiment)
-                df['aspect_list'] = df['segment'].apply(get_aspects)
-                st.session_state['df_exploded'] = df
+        st.markdown("### ⚙️ Pengaturan Labeling Biner")
+        handle_neutral = st.radio(
+            "Pilih penanganan untuk opini yang terdeteksi 'Netral' oleh RoBERTa:",
+            ("Hapus Data Netral (Hanya simpan Positif & Negatif)", "Ubah data Netral menjadi Positif")
+        )
 
+        if not st.session_state['labeling_done']:
+            if st.button("Jalankan Pelabelan & Aspek"):
+                with st.spinner("Menentukan sentimen dan aspek per segmen..."):
+                    classifier = load_roberta()
+                    
+                    # Progress bar untuk pelabelan RoBERTa
+                    total_rows = len(df)
+                    my_bar = st.progress(0)
+                    
+                    sentiments = []
+                    for i, seg in enumerate(df['segment']):
+                        sentiments.append(determine_sentiment_roberta(seg, classifier))
+                        # Update progress bar secara berkala agar UI tidak kaku
+                        if i % max(1, total_rows // 100) == 0:
+                            my_bar.progress(min((i + 1) / total_rows, 1.0))
+                    my_bar.progress(1.0)
+                    
+                    df['sentiment_label'] = sentiments
+
+                    # Simpan data netral sebelum diubah/dihapus untuk ditampilkan
+                    df_neutral = df[df['sentiment_label'] == 'Netral'].copy()
+                    st.session_state['df_neutral_handled'] = df_neutral
+                    st.session_state['neutral_action'] = handle_neutral
+
+                    # Menangani label Netral sesuai pilihan pengguna
+                    if handle_neutral == "Hapus Data Netral (Hanya simpan Positif & Negatif)":
+                        df = df[df['sentiment_label'] != 'Netral'].reset_index(drop=True)
+                    else:
+                        df['sentiment_label'] = df['sentiment_label'].replace('Netral', 'Positif')
+
+                    df['aspect_list'] = df['segment'].apply(get_aspects)
+                    st.session_state['df_exploded'] = df
+                    st.session_state['labeling_done'] = True
+                    st.rerun()
+        else:
+            df = st.session_state['df_exploded']
             st.success("Pelabelan selesai!")
+
+            if st.button("🔄 Ulangi Pelabelan"):
+                st.session_state['labeling_done'] = False
+                st.session_state['df_neutral_handled'] = None
+                st.session_state['neutral_action'] = None
+                if 'sentiment_label' in st.session_state['df_exploded'].columns:
+                    st.session_state['df_exploded'].drop(columns=['sentiment_label', 'aspect_list'], inplace=True, errors='ignore')
+                st.rerun()
 
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -601,6 +524,15 @@ elif menu == PAGES[2]:
                 st.bar_chart(df['sentiment_label'].value_counts())
 
             st.dataframe(df[['segment', 'sentiment_label', 'aspect_list']].head(10))
+
+            # --- Tampilkan Info Data Netral ---
+            if st.session_state.get('df_neutral_handled') is not None and not st.session_state['df_neutral_handled'].empty:
+                st.divider()
+                st.subheader("⚠️ Data Sentimen Netral yang Ditangani")
+                action_text = "dihapus dari dataset" if "Hapus" in st.session_state['neutral_action'] else "diubah menjadi Positif"
+                st.info(f"Terdapat **{len(st.session_state['df_neutral_handled'])}** segmen yang awalnya terdeteksi **Netral** oleh model RoBERTa dan telah **{action_text}** sesuai pengaturan Anda.")
+                
+                st.dataframe(st.session_state['df_neutral_handled'][['segment', 'sentiment_label', 'aspect_list']].head(10))
 
             # Contoh per aspek
             st.divider()
@@ -650,8 +582,8 @@ elif menu == PAGES[2]:
                         st.pyplot(fig_wc)
                         plt.close(fig_wc)
 
-        if 'sentiment_label' in st.session_state['df_exploded'].columns:
-            st.button("Lanjut ke Modeling →", on_click=set_page, args=(PAGES[3],))
+            if 'sentiment_label' in st.session_state['df_exploded'].columns:
+                st.button("Lanjut ke Modeling →", on_click=set_page, args=(PAGES[3],))
     else:
         st.warning("Lakukan Preprocessing terlebih dahulu.")
 
@@ -707,7 +639,7 @@ elif menu == PAGES[3]:
                     
                     # 3. Latih Naive Bayes (Multinomial standar krn data sudah 51:49)
                     t_nb = time.perf_counter()
-                    nb = MultinomialNB() 
+                    nb = MultinomialNB(fit_prior=False, class_prior=[0.5, 0.5]) 
                     nb.fit(X_train_vec, y_train)
                     t_nb = time.perf_counter() - t_nb
                     y_pred_nb = nb.predict(X_test_vec)
@@ -717,7 +649,7 @@ elif menu == PAGES[3]:
                     
                     # 4. Latih LinearSVC
                     t_svm = time.perf_counter()
-                    svm = LinearSVC(random_state=42)
+                    svm = LinearSVC(class_weight='balanced', max_iter=10000)
                     svm.fit(X_train_vec, y_train)
                     t_svm = time.perf_counter() - t_svm
                     y_pred_svm = svm.predict(X_test_vec)
