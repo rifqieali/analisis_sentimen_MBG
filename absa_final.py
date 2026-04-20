@@ -60,6 +60,7 @@ def load_resources():
         "yg", "dg", "rt", "dgn", "ny", "d", "klo", "kalo", "amp",
         "biar", "bikin", "udah", "udh", "aja", "sih", "deh", "nih",
         "lah", "dong", "kan", "tuh", "mah", "wkwk", "haha", "hehe",
+        "aku", "saya", "kamu", "dia", "kita", "kami", "mereka", "sama"
     }
     negation_words = {
         'tidak', 'tak', 'tiada', 'bukan', 'jangan',
@@ -113,6 +114,68 @@ lexicon = load_inset_lexicon()
 # ============================================================
 # KONSTANTA
 # ============================================================
+DOMAIN_LEXICON = {
+    # ── KUALITAS ──────────────────────────────────────────
+    # Tidak ada di InSet
+    "aroma"       :  2,
+    "aromanya"    :  2,   # form dengan sufiks
+    "lauk"        :  1,   # netral-positif, konteksnya tergantung modifier
+    "higienis"    :  3,
+    "higienitas"  :  3,
+    "keracunan"   : -5,
+    "mentah"      : -3,
+    "matang"      :  2,
+    "bergizi"     :  3,
+    "bernutrisi"  :  3,
+    "lezat"       :  5,   # sudah ada, tapi eksplisitkan ulang
+    "tidak layak" : -4,   # bigram — ditangani terpisah
+    "basi"        : -4,
+    "ulat"        : -5,
+    "porsi"       :  1,   # netral, tergantung modifier
+    # ── LAYANAN ───────────────────────────────────────────
+    "terlambat"   : -3,
+    "molor"       : -3,
+    "katering"    :  1,
+    "vendor"      :  1,
+    "terdistribusi":  2,
+    "pelosok"     :  1,   # netral, jadi bermakna jika "sampai pelosok"
+    "merata"      :  3,   # naikkan dari +1
+    "tepat waktu" :  3,   # bigram
+    "tidak merata": -4,   # bigram
+    # ── ANGGARAN ──────────────────────────────────────────
+    "markup"      : -4,
+    "disunat"     : -4,
+    "dikorupsi"   : -5,
+    "diselewengkan": -5,
+    "tepat sasaran":  3,  # bigram
+    "tidak tepat sasaran": -4,
+}
+
+BIGRAM_OVERRIDE = {
+    # Konteks positif yang kata dasarnya negatif di InSet
+    "bau enak"      :  2,
+    "bau harum"     :  3,
+    "bau wangi"     :  3,
+    "bau sedap"     :  2,
+    # Bigram negatif penting
+    "tidak merata"  : -4,
+    "tidak layak"   : -4,
+    "tidak higienis": -4,
+    "tidak sehat"   : -3,
+    "tidak tepat"   : -2,
+    "kurang enak"   : -2,
+    "kurang bersih" : -2,
+    "kurang merata" : -3,
+    "tepat sasaran" :  3,
+    "tepat waktu"   :  3,
+}
+
+ABSOLUTE_NEGATIF = {'korupsi', 'keracunan', 'basi', 'ulat', 'markup', 'sunat', 'bocor', 'hambar', 'keras', 'mentah'}
+ABSOLUTE_POSITIF = {'terbantu', 'kenyang', 'sehat', 'lezat', 'merata'}
+
+# Gabungkan: domain lexicon override InSet untuk kata yang konflik
+final_lexicon = {**lexicon, **DOMAIN_LEXICON}
+
 ASPEK_DICT = {
     'Kualitas': [
         'kualitas', 'bagus', 'jelek', 'enak', 'basi', 'gizi', 'susu',
@@ -142,6 +205,7 @@ TFIDF_PARAMS = {
     'ngram_range': (1, 2),
     'sublinear_tf': True,
     'min_df': 2,
+    'max_df': 0.85
 }
 
 # ============================================================
@@ -186,29 +250,61 @@ def get_aspects(text: str) -> list:
 def determine_sentiment(text: str) -> str:
     if not isinstance(text, str):
         return 'Netral'
+
     words = text.split()
+    tokens_set = set(words)
     score = 0
+
+    # ── Helper: cek apakah kata di posisi i dinegasi ──────────
+    def is_negated(i):
+        # Cek 1-3 kata sebelumnya
+        for j in range(max(0, i - 3), i):
+            if words[j] in negation_words:
+                return True
+        return False
+
+    # ── 1. ABSOLUTE NEGATIF (dengan cek negasi) ───────────────
     for i, word in enumerate(words):
-        if word in lexicon:
-            val = lexicon[word]
-            if i > 0 and words[i-1] in negation_words:
-                val = -val
-            elif i > 1 and words[i-2] in negation_words:
+        if word in ABSOLUTE_NEGATIF:
+            if not is_negated(i):
+                return 'Negatif'   # hanya jika tidak dinegasi
+
+    # ── 2. ABSOLUTE POSITIF (dengan cek negasi) ───────────────
+    for i, word in enumerate(words):
+        if word in ABSOLUTE_POSITIF:
+            if not is_negated(i):
+                return 'Positif'
+
+    # ── 3. BIGRAM OVERRIDE ────────────────────────────────────
+    for i in range(len(words) - 1):
+        bigram = words[i] + " " + words[i+1]
+        if bigram in BIGRAM_OVERRIDE:
+            score += BIGRAM_OVERRIDE[bigram]
+
+    # ── 4. UNIGRAM LEXICON ────────────────────────────────────
+    for i, word in enumerate(words):
+        if i > 0 and (words[i-1] + " " + word) in BIGRAM_OVERRIDE:
+            continue
+        if word in final_lexicon:
+            val = final_lexicon[word]
+            if is_negated(i):
                 val = -val
             score += val
-    if score > 0: return 'Positif'
-    elif score < 0: return 'Negatif'
-    return 'Netral'
+
+    if score >= 0:
+        return 'Positif'
+    return 'Negatif'
 
 # ============================================================
 # SESSION STATE & NAVIGASI
 # ============================================================
 PAGES = [
-    "1. Upload Data",
-    "2. Preprocessing & Segmentasi",
-    "3. Labeling & Aspek",
-    "4. Modeling (Training)",
-    "5. Evaluasi Detail (Per Aspek)",
+    "Upload Data",
+    "Preprocessing & Segmentasi",
+    "Labeling & Aspek",
+    "Modeling (Training)",
+    "Evaluasi Detail (Per Aspek)",
+    "Pengujian Real-Time"
 ]
 
 for key, default in [
@@ -232,7 +328,7 @@ menu = st.sidebar.selectbox("Pilih Tahapan", PAGES, key='current_page')
 # TAB 1: UPLOAD DATA
 # ============================================================
 if menu == PAGES[0]:
-    st.header("1. Upload Dataset CSV")
+    st.header("Upload Dataset CSV")
 
     data_type = st.radio(
         "Jenis data yang diupload:",
@@ -265,7 +361,7 @@ if menu == PAGES[0]:
 # TAB 2: PREPROCESSING & SEGMENTASI
 # ============================================================
 elif menu == PAGES[1]:
-    st.header("2. Preprocessing & Segmentasi")
+    st.header("Preprocessing & Segmentasi")
     st.warning("1 baris tweet dapat dipecah menjadi beberapa segmen berdasarkan konjungsi.")
 
     if st.session_state['df_raw'] is not None:
@@ -415,7 +511,7 @@ elif menu == PAGES[1]:
 # TAB 3: LABELING & ASPEK
 # ============================================================
 elif menu == PAGES[2]:
-    st.header("3. Pelabelan Sentimen & Identifikasi Aspek")
+    st.header("Pelabelan Sentimen & Identifikasi Aspek")
 
     if st.session_state['df_exploded'] is not None:
         df = st.session_state['df_exploded']
@@ -458,11 +554,10 @@ elif menu == PAGES[2]:
             # WordCloud
             st.divider()
             st.subheader("Visualisasi WordCloud")
-            wc1, wc2, wc3 = st.columns(3)
+            wc1, wc2 = st.columns(2)
             for col_wc, label_wc, cmap_wc in [
                 (wc1, 'Positif', 'Greens'),
                 (wc2, 'Negatif', 'Reds'),
-                (wc3, 'Netral', 'Blues'),
             ]:
                 with col_wc:
                     st.markdown(f"**{label_wc}**")
@@ -484,7 +579,7 @@ elif menu == PAGES[2]:
 # TAB 4: MODELING (TRAINING)
 # ============================================================
 elif menu == PAGES[3]:
-    st.header("4. Training Model (MultinomialNB vs LinearSVC)")
+    st.header("Training Model (MultinomialNB vs LinearSVC)")
 
     df_exp = st.session_state.get('df_exploded')
     if df_exp is not None and 'sentiment_label' in df_exp.columns:
@@ -502,152 +597,139 @@ elif menu == PAGES[3]:
             except Exception:
                 pass
 
-        remove_neutral = st.checkbox("Hapus data Netral", value=True)
-        df_model = df_exp[df_exp['sentiment_label'] != 'Netral'].copy() if remove_neutral else df_exp.copy()
+        df_model = df_exp.copy()
 
         if st.button("Mulai Training Model"):
-            with st.spinner("Ekstraksi TF-IDF dan persiapan data..."):
+            with st.spinner("Mengeksekusi 3 Skenario Pengujian (70:30, 80:20, 90:10) secara paralel..."):
                 X = df_model['segment']
                 y = df_model['sentiment_label']
 
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=0.2, random_state=42, stratify=y
-                )
-
-                tfidf = TfidfVectorizer(**TFIDF_PARAMS)
-                X_train_vec = tfidf.fit_transform(X_train)
-                X_test_vec = tfidf.transform(X_test)
-                
-            # --- ANIMASI PROGRESS BAR (MIMIC APLIKASI2) ---
-            col_prog1, col_prog2 = st.columns(2)
-            
-            with col_prog1:
-                st.write("**Melatih Naive Bayes...**")
-                pb_nb = st.progress(0)
-                t_nb = time.perf_counter()
-                nb = MultinomialNB()
-                
-                # Simulasi progres agar UI tidak kaku
-                for i in range(50):
-                    time.sleep(0.005)
-                    pb_nb.progress(i + 1)
-                    
-                nb.fit(X_train_vec, y_train)
-                pb_nb.progress(100)
-                t_nb = time.perf_counter() - t_nb
-                y_pred_nb = nb.predict(X_test_vec)
-                
-            with col_prog2:
-                st.write("**Melatih SVM...**")
-                pb_svm = st.progress(0)
-                t_svm = time.perf_counter()
-                svm = LinearSVC()
-                
-                # Simulasi progres agar UI tidak kaku
-                for i in range(50):
-                    time.sleep(0.005)
-                    pb_svm.progress(i + 1)
-                    
-                svm.fit(X_train_vec, y_train)
-                pb_svm.progress(100)
-                t_svm = time.perf_counter() - t_svm
-                y_pred_svm = svm.predict(X_test_vec)
-
-            # Simpan ke session state
-            st.session_state['model_nb'] = nb
-            st.session_state['model_svm'] = svm
-            st.session_state['vectorizer'] = tfidf
-            st.session_state['y_test'] = y_test
-            st.session_state['y_pred_nb'] = y_pred_nb
-            st.session_state['y_pred_svm'] = y_pred_svm
-            st.session_state['t_nb'] = t_nb
-            st.session_state['t_svm'] = t_svm
-            
-            st.session_state['model_nb_final'] = nb
-            st.session_state['model_svm_final'] = svm
-            st.session_state['vectorizer_final'] = tfidf
-
-            test_df = df_model.loc[X_test.index].copy()
-            test_df['y_true'] = y_test.values
-            test_df['pred_nb'] = y_pred_nb
-            test_df['pred_svm'] = y_pred_svm
-            st.session_state['test_data_eval'] = test_df
-
-            # Simpan model ke disk
-            saved = {
-                'model_nb': nb, 'model_svm': svm, 'vectorizer': tfidf,
-                'y_test': y_test, 'y_pred_nb': y_pred_nb, 'y_pred_svm': y_pred_svm,
-                'test_data_eval': test_df, 't_nb': t_nb, 't_svm': t_svm
-            }
-            try:
-                joblib.dump(saved, 'saved_model_data.joblib')
-            except Exception as e:
-                st.warning(f"Training selesai, namun gagal simpan ke disk: {e}")
-
-
-
-        # ── TAMPILKAN HASIL EVALUASI SIDE-BY-SIDE ──────────
-        if 'y_test' in st.session_state:
-            y_test = st.session_state['y_test']
-            y_pred_nb = st.session_state['y_pred_nb']
-            y_pred_svm = st.session_state['y_pred_svm']
-            t_nb = st.session_state.get('t_nb', 0.0)
-            t_svm = st.session_state.get('t_svm', 0.0)
-
-            st.subheader("Matriks Evaluasi Global (Data Uji 20%)")
-            
-            col_eval1, col_eval2 = st.columns(2)
-            labels_cm = sorted(pd.concat([pd.Series(y_test), pd.Series(y_pred_nb), pd.Series(y_pred_svm)]).unique())
-
-            with col_eval1:
-                # 1. Tabel Metrik Naive Bayes
-                metrics_nb = {
-                    "model": "Multinomial NB",
-                    "accuracy": accuracy_score(y_test, y_pred_nb),
-                    "precision": precision_score(y_test, y_pred_nb, average='weighted', zero_division=0),
-                    "recall": recall_score(y_test, y_pred_nb, average='weighted', zero_division=0),
-                    "f1": f1_score(y_test, y_pred_nb, average='weighted', zero_division=0),
-                    "train_time (s)": round(t_nb, 4)
+                skenario_splits = {
+                    "70:30": 0.3,
+                    "80:20": 0.2,
+                    "90:10": 0.1
                 }
-                st.dataframe(pd.DataFrame([metrics_nb]).set_index("model").style.format("{:.4f}"), use_container_width=True)
                 
-                # 2. Confusion Matrix Naive Bayes
-                fig_nb, ax_nb = plt.subplots(figsize=(6, 5))
-                sns.heatmap(confusion_matrix(y_test, y_pred_nb, labels=labels_cm), annot=True, fmt='d', cmap='Blues', xticklabels=labels_cm, yticklabels=labels_cm, ax=ax_nb)
-                ax_nb.set_title("Confusion Matrix Multinomial Naive Bayes", fontsize=14)
-                ax_nb.set_xlabel("Predicted")
-                ax_nb.set_ylabel("Actual")
-                st.pyplot(fig_nb)
-                plt.close(fig_nb)
+                hasil_skenario = {}
+                pb = st.progress(0)
+                progress_step = 0
 
-                # 3. MENGGUNAKAN ST.CODE AGAR RAPIH
-                with st.expander("Detail Classification Report (NB)"):
-                    st.code(classification_report(y_test, y_pred_nb, zero_division=0))
+                for name, test_size in skenario_splits.items():
+                    # 1. Split Data
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X, y, test_size=test_size, random_state=42, stratify=y
+                    )
 
-            with col_eval2:
-                # 1. Tabel Metrik LinearSVC
-                metrics_svm = {
-                    "model": "LinearSVC",
-                    "accuracy": accuracy_score(y_test, y_pred_svm),
-                    "precision": precision_score(y_test, y_pred_svm, average='weighted', zero_division=0),
-                    "recall": recall_score(y_test, y_pred_svm, average='weighted', zero_division=0),
-                    "f1": f1_score(y_test, y_pred_svm, average='weighted', zero_division=0),
-                    "train_time (s)": round(t_svm, 4)
-                }
-                st.dataframe(pd.DataFrame([metrics_svm]).set_index("model").style.format("{:.4f}"), use_container_width=True)
-                
-                # 2. Confusion Matrix LinearSVC
-                fig_svm, ax_svm = plt.subplots(figsize=(6, 5))
-                sns.heatmap(confusion_matrix(y_test, y_pred_svm, labels=labels_cm), annot=True, fmt='d', cmap='Blues', xticklabels=labels_cm, yticklabels=labels_cm, ax=ax_svm)
-                ax_svm.set_title("Confusion Matrix LinearSVC", fontsize=14)
-                ax_svm.set_xlabel("Predicted")
-                ax_svm.set_ylabel("Actual")
-                st.pyplot(fig_svm)
-                plt.close(fig_svm)
+                    # 2. Ekstraksi TF-IDF
+                    tfidf = TfidfVectorizer(**TFIDF_PARAMS)
+                    X_train_vec = tfidf.fit_transform(X_train)
+                    X_test_vec = tfidf.transform(X_test)
+                    
+                    # 3. Latih Naive Bayes (Multinomial standar krn data sudah 51:49)
+                    t_nb = time.perf_counter()
+                    nb = MultinomialNB(alpha=0.1) 
+                    nb.fit(X_train_vec, y_train)
+                    t_nb = time.perf_counter() - t_nb
+                    y_pred_nb = nb.predict(X_test_vec)
+                    
+                    progress_step += 15
+                    pb.progress(progress_step)
+                    
+                    # 4. Latih LinearSVC
+                    t_svm = time.perf_counter()
+                    svm = LinearSVC(random_state=42)
+                    svm.fit(X_train_vec, y_train)
+                    t_svm = time.perf_counter() - t_svm
+                    y_pred_svm = svm.predict(X_test_vec)
+                    
+                    progress_step += 15
+                    pb.progress(progress_step)
+                    
+                    # 5. Simpan Hasil per Skenario
+                    test_df = df_model.loc[X_test.index].copy()
+                    test_df['y_true'] = y_test.values
+                    test_df['pred_nb'] = y_pred_nb
+                    test_df['pred_svm'] = y_pred_svm
+                    
+                    hasil_skenario[name] = {
+                        'model_nb': nb, 'model_svm': svm, 'vectorizer': tfidf,
+                        'y_test': y_test, 'y_pred_nb': y_pred_nb, 'y_pred_svm': y_pred_svm,
+                        't_nb': t_nb, 't_svm': t_svm, 'test_data_eval': test_df
+                    }
+                    
+                    # 6. Tetapkan 80:20 sebagai Model Final untuk Tab 6
+                    if name == "80:20":
+                        st.session_state['model_nb'] = nb
+                        st.session_state['model_svm'] = svm
+                        st.session_state['vectorizer'] = tfidf
+                        st.session_state['model_nb_final'] = nb
+                        st.session_state['model_svm_final'] = svm
+                        st.session_state['vectorizer_final'] = tfidf
+                        st.session_state['test_data_eval'] = test_df # Eval tab 5 pakai yg 80:20
+                        
+                pb.progress(100)
+                st.session_state['hasil_skenario'] = hasil_skenario
+                st.success("Training untuk ketiga skenario selesai!")
 
-                # 3. MENGGUNAKAN ST.CODE AGAR RAPIH
-                with st.expander("Detail Classification Report (SVM)"):
-                    st.code(classification_report(y_test, y_pred_svm, zero_division=0))
+        # ── TAMPILKAN HASIL EVALUASI DENGAN TABS ──────────
+        if 'hasil_skenario' in st.session_state:
+            st.divider()
+            st.subheader("Matriks Evaluasi Global Berdasarkan Skenario Split")
+            
+            # Membuat 3 Tab
+            tab70, tab80, tab90 = st.tabs(["**70:30**", "**80:20**", "**90:10**"])
+            
+            tabs_dict = {"70:30": tab70, "80:20": tab80, "90:10": tab90}
+            
+            for split_name, tab in tabs_dict.items():
+                with tab:
+                    data = st.session_state['hasil_skenario'][split_name]
+                    y_t = data['y_test']
+                    p_nb = data['y_pred_nb']
+                    p_svm = data['y_pred_svm']
+                    
+                    col_eval1, col_eval2 = st.columns(2)
+                    labels_cm = sorted(pd.concat([pd.Series(y_t), pd.Series(p_nb), pd.Series(p_svm)]).unique())
+
+                    with col_eval1:
+                        metrics_nb = {
+                            "model": "Multinomial NB",
+                            "accuracy": accuracy_score(y_t, p_nb),
+                            "precision": precision_score(y_t, p_nb, average='weighted', zero_division=0),
+                            "recall": recall_score(y_t, p_nb, average='weighted', zero_division=0),
+                            "f1": f1_score(y_t, p_nb, average='weighted', zero_division=0),
+                            "train_time (s)": round(data['t_nb'], 4)
+                        }
+                        st.dataframe(pd.DataFrame([metrics_nb]).set_index("model").style.format("{:.4f}"), use_container_width=True)
+                        
+                        fig_nb, ax_nb = plt.subplots(figsize=(5, 4))
+                        sns.heatmap(confusion_matrix(y_t, p_nb, labels=labels_cm), annot=True, fmt='d', cmap='Blues', xticklabels=labels_cm, yticklabels=labels_cm, ax=ax_nb)
+                        ax_nb.set_title(f"Confusion Matrix MultinomialNB ({split_name})", fontsize=12)
+                        st.pyplot(fig_nb)
+                        plt.close(fig_nb)
+
+                        with st.expander("Detail Classification Report (NB)"):
+                            st.code(classification_report(y_t, p_nb, zero_division=0))
+
+                    with col_eval2:
+                        metrics_svm = {
+                            "model": "LinearSVC",
+                            "accuracy": accuracy_score(y_t, p_svm),
+                            "precision": precision_score(y_t, p_svm, average='weighted', zero_division=0),
+                            "recall": recall_score(y_t, p_svm, average='weighted', zero_division=0),
+                            "f1": f1_score(y_t, p_svm, average='weighted', zero_division=0),
+                            "train_time (s)": round(data['t_svm'], 4)
+                        }
+                        st.dataframe(pd.DataFrame([metrics_svm]).set_index("model").style.format("{:.4f}"), use_container_width=True)
+                        
+                        fig_svm, ax_svm = plt.subplots(figsize=(5, 4))
+                        sns.heatmap(confusion_matrix(y_t, p_svm, labels=labels_cm), annot=True, fmt='d', cmap='Blues', xticklabels=labels_cm, yticklabels=labels_cm, ax=ax_svm)
+                        ax_svm.set_title(f"Confusion Matrix LinearSVC ({split_name})", fontsize=12)
+                        st.pyplot(fig_svm)
+                        plt.close(fig_svm)
+
+                        with st.expander("Detail Classification Report (SVM)"):
+                            st.code(classification_report(y_t, p_svm, zero_division=0))
 
             # ── Visualisasi TF-IDF top words ────────────────────────────────
             st.divider()
@@ -681,63 +763,85 @@ elif menu == PAGES[3]:
 # TAB 5: EVALUASI DETAIL PER ASPEK
 # ============================================================
 elif menu == PAGES[4]:
-    st.header("5. Evaluasi Detail Per Aspek")
+    st.header("Evaluasi Detail Per Aspek")
 
-    if 'test_data_eval' in st.session_state:
-        df_eval = st.session_state['test_data_eval']
+    if 'hasil_skenario' in st.session_state:
+        # Pilihan Skenario untuk Evaluasi Detail
+        skenario_options = list(st.session_state['hasil_skenario'].keys())
+        selected_scenario = st.selectbox(
+            "Pilih Skenario Split Data untuk Dilihat Detailnya:",
+            options=skenario_options,
+            index=1  # Default ke 80:20
+        )
+        
+        # Ambil data dari skenario yang dipilih
+        data_eval = st.session_state['hasil_skenario'][selected_scenario]
+        df_eval = data_eval['test_data_eval']
 
         # ── Evaluasi Per Aspek ───────────────────────────────────────────────
-        df_exp_eval = df_eval.explode('aspect_list') if 'aspect_list' in df_eval.columns else df_eval.copy()
-
-        asp_col = 'aspect_list' if 'aspect_list' in df_exp_eval.columns else 'aspek'
+        df_exp_eval = df_eval.explode('aspect_list')
+        
         aspect_metrics = []
-        for asp in df_exp_eval[asp_col].unique():
-            sub = df_exp_eval[df_exp_eval[asp_col] == asp]
+        unique_aspects = [a for a in df_exp_eval['aspect_list'].unique() if pd.notna(a)]
+        
+        for asp in unique_aspects:
+            sub = df_exp_eval[df_exp_eval['aspect_list'] == asp]
             if len(sub) > 0:
                 aspect_metrics.append({
                     'Aspek': asp,
-                    'Jumlah Segmen Uji': len(sub),
+                    'Jumlah Data Uji': len(sub),
                     'Akurasi NB': accuracy_score(sub['y_true'], sub['pred_nb']),
                     'F1 NB': f1_score(sub['y_true'], sub['pred_nb'], average='weighted', zero_division=0),
                     'Akurasi SVM': accuracy_score(sub['y_true'], sub['pred_svm']),
                     'F1 SVM': f1_score(sub['y_true'], sub['pred_svm'], average='weighted', zero_division=0),
                 })
 
-        df_asp_met = pd.DataFrame(aspect_metrics).sort_values('Jumlah Segmen Uji', ascending=False)
-        fmt_cols = {c: '{:.2%}' for c in df_asp_met.columns if 'Akurasi' in c or 'F1' in c}
-        st.dataframe(df_asp_met.style.format(fmt_cols))
+        df_asp_met = pd.DataFrame(aspect_metrics)
+        
+        if not df_asp_met.empty:
+            df_asp_met = df_asp_met.sort_values('Jumlah Data Uji', ascending=False)
+            
+            # Tampilkan tabel metrik per aspek
+            fmt_cols = {c: '{:.2%}' for c in df_asp_met.columns if 'Akurasi' in c or 'F1' in c}
+            st.dataframe(df_asp_met.style.format(fmt_cols), use_container_width=True)
 
-        # Bar chart per aspek
-        fig_asp, ax_asp = plt.subplots(figsize=(10, 5))
-        df_asp_met.melt(id_vars=['Aspek'], value_vars=['Akurasi NB', 'Akurasi SVM'],
-                        var_name='Model', value_name='Akurasi').pipe(
-            lambda d: sns.barplot(data=d, x='Aspek', y='Akurasi', hue='Model', palette='coolwarm', ax=ax_asp)
-        )
-        ax_asp.set_ylim(0, 1.1)
-        ax_asp.set_title("Perbandingan Akurasi NB vs SVM per Aspek")
-        plt.xticks(rotation=30)
-        for p in ax_asp.patches:
-            if p.get_height() > 0:
-                ax_asp.annotate(f'{p.get_height():.2f}',
-                                (p.get_x() + p.get_width()/2, p.get_height()),
-                                ha='center', va='bottom', fontsize=8)
-        st.pyplot(fig_asp)
-        plt.close(fig_asp)
+            # Visualisasi Perbandingan Akurasi Per Aspek
+            fig_asp, ax_asp = plt.subplots(figsize=(10, 5))
+            df_plot = df_asp_met.melt(id_vars=['Aspek'], value_vars=['Akurasi NB', 'Akurasi SVM'],
+                                     var_name='Model', value_name='Akurasi')
+            
+            sns.barplot(data=df_plot, x='Aspek', y='Akurasi', hue='Model', palette='coolwarm', ax=ax_asp)
+            
+            ax_asp.set_ylim(0, 1.1)
+            ax_asp.set_title(f"Perbandingan Akurasi NB vs SVM per Aspek ({selected_scenario})")
+            plt.xticks(rotation=30)
+            
+            # Tambahkan label angka di atas bar
+            for p in ax_asp.patches:
+                if p.get_height() > 0:
+                    ax_asp.annotate(f'{p.get_height():.2%}', 
+                                    (p.get_x() + p.get_width()/2, p.get_height()), 
+                                    ha='center', va='bottom', fontsize=8)
+            
+            st.pyplot(fig_asp)
+            plt.close(fig_asp)
+        else:
+            st.info("Tidak ada data aspek untuk ditampilkan (Data metrik kosong).")
 
         # ── WordCloud Per Aspek ──────────────────────────────────────────────
+        st.divider()
         st.subheader("WordCloud per Aspek")
-        aspek_list = df_asp_met['Aspek'].tolist()
+        aspek_list = df_asp_met['Aspek'].tolist() if not df_asp_met.empty else []
         if aspek_list:
             tabs_wc = st.tabs(aspek_list)
             for i, asp in enumerate(aspek_list):
                 with tabs_wc[i]:
-                    sub_asp = df_exp_eval[df_exp_eval[asp_col] == asp]
+                    sub_asp = df_exp_eval[df_exp_eval['aspect_list'] == asp]
                     seg_col = 'segment' if 'segment' in sub_asp.columns else 'segment'
-                    wc1, wc2, wc3 = st.columns(3)
+                    wc1, wc2 = st.columns(2)
                     for col_w, label_w, cmap_w in [
                         (wc1, 'Positif', 'Greens'),
                         (wc2, 'Negatif', 'Reds'),
-                        (wc3, 'Netral', 'Blues'),
                     ]:
                         with col_w:
                             st.markdown(f"##### {label_w}")
@@ -752,5 +856,76 @@ elif menu == PAGES[4]:
                                 plt.close(fig_wc)
                             else:
                                 st.caption(f"Tidak ada data {label_w.lower()}.")
+
+            st.button("Pengujian Real-Time", on_click=set_page, args=(PAGES[5],))
+
+
     else:
         st.warning("Latih model di Tab 4 terlebih dahulu.")
+# ============================================================
+# TAB 6: PENGUJIAN REAL-TIME
+# ============================================================
+elif menu == PAGES[5]:
+    st.header("Pengujian Model Real-Time")
+    
+    if 'model_nb' not in st.session_state or 'model_svm' not in st.session_state:
+        st.warning("Anda belum melatih model. Silakan kembali ke Tab Modeling dan klik 'Mulai Training'.")
+    else:
+        
+        user_input = st.text_area("Masukkan opini atau teks baru terkait Program MBG:", 
+                                  height=150, 
+                                  placeholder="")
+        
+        if st.button("Analisis Teks"):
+            if user_input.strip() == "":
+                st.error("Teks tidak boleh kosong.")
+            else:
+                with st.spinner("Memproses pipeline NLP (Cleaning, Segmentasi, Stopword, Stemming)..."):
+                    # 1. Masuk ke Pipeline Preprocessing yang sama dengan Tab 2
+                    processed_segments = preprocess_text(user_input)
+                    
+                    if not processed_segments:
+                        st.warning("Teks tidak menghasilkan kata yang bermakna setelah melewati filter *stopword*.")
+                    else:
+                        # 2. Ambil model dan vectorizer dari memori
+                        nb_model = st.session_state['model_nb']
+                        svm_model = st.session_state['model_svm']
+                        vec = st.session_state['vectorizer']
+                        
+                        # 3. Transformasi ke TF-IDF
+                        X_input_tfidf = vec.transform(processed_segments)
+                        
+                        # 4. Lakukan Prediksi
+                        preds_nb = nb_model.predict(X_input_tfidf)
+                        preds_svm = svm_model.predict(X_input_tfidf)
+                        probs_nb = nb_model.predict_proba(X_input_tfidf)
+                        classes = nb_model.classes_
+                        
+                        # 5. Siapkan output tabel
+                        st.divider()
+                        st.subheader("Hasil Analisis Per Segmen")
+                        
+                        def get_color(label):
+                            if str(label) == 'Positif': return "🟢 Positif"
+                            return "🔴 Negatif"
+                        
+                        results_data = []
+                        for i, seg in enumerate(processed_segments):
+                            # Ambil aspek menggunakan fungsi dari Tab 3
+                            aspect_list = get_aspects(seg)
+                            aspect_str = ", ".join(aspect_list)
+                            
+                            # Format persentase probabilitas Naive Bayes
+                            prob_str = " | ".join([f"{cls}: {probs_nb[i][j]:.1%}" for j, cls in enumerate(classes)])
+                            
+                            results_data.append({
+                                "Segmen Teks Bersih": seg,
+                                "Aspek Terdeteksi": aspect_str,
+                                "Prediksi LinearSVC": get_color(preds_svm[i]),
+                                "Prediksi Naive Bayes": get_color(preds_nb[i]),
+                                "Probabilitas NB": prob_str
+                            })
+                        
+                        st.table(pd.DataFrame(results_data))
+                        
+                
