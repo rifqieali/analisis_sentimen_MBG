@@ -479,7 +479,10 @@ elif menu == PAGES[2]:
                     my_bar.progress(1.0)
                     
                     df['sentiment_label'] = sentiments
+<<<<<<< HEAD
                     df['aspect_list'] = df['segment'].apply(get_aspects)
+=======
+>>>>>>> 7713c769f2310814c0164fcbf06c9afa6c8a76d3
 
                     # Simpan data netral sebelum diubah/dihapus untuk ditampilkan
                     df_neutral = df[df['sentiment_label'] == 'Netral'].copy()
@@ -492,6 +495,10 @@ elif menu == PAGES[2]:
                     else:
                         df['sentiment_label'] = df['sentiment_label'].replace('Netral', 'Positif')
 
+<<<<<<< HEAD
+=======
+                    df['aspect_list'] = df['segment'].apply(get_aspects)
+>>>>>>> 7713c769f2310814c0164fcbf06c9afa6c8a76d3
                     st.session_state['df_exploded'] = df
                     st.session_state['labeling_done'] = True
                     st.rerun()
@@ -639,7 +646,7 @@ elif menu == PAGES[3]:
                     
                     # 3. Latih Naive Bayes (Multinomial standar krn data sudah 51:49)
                     t_nb = time.perf_counter()
-                    nb = MultinomialNB() 
+                    nb = MultinomialNB(fit_prior=False, class_prior=[0.5, 0.5]) 
                     nb.fit(X_train_vec, y_train)
                     t_nb = time.perf_counter() - t_nb
                     y_pred_nb = nb.predict(X_test_vec)
@@ -649,7 +656,11 @@ elif menu == PAGES[3]:
                     
                     # 4. Latih LinearSVC
                     t_svm = time.perf_counter()
+<<<<<<< HEAD
                     svm = LinearSVC()
+=======
+                    svm = LinearSVC(class_weight='balanced', max_iter=10000)
+>>>>>>> 7713c769f2310814c0164fcbf06c9afa6c8a76d3
                     svm.fit(X_train_vec, y_train)
                     t_svm = time.perf_counter() - t_svm
                     y_pred_svm = svm.predict(X_test_vec)
