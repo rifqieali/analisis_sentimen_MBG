@@ -22,7 +22,8 @@ import joblib
 import os
 import warnings
 from io import BytesIO
-
+import torch
+from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
 import nltk
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
@@ -44,6 +45,27 @@ st.set_page_config(page_title="Analisis Sentimen MBG", layout="wide", page_icon=
 # ============================================================
 # RESOURCE LOADING (CACHED)
 # ============================================================
+@st.cache_resource
+def load_roberta():
+    local_model_path = "./roberta_sentiment_local"
+    MODEL_NAME = "w11wo/indonesian-roberta-base-sentiment-classifier"
+
+    if not os.path.exists(local_model_path):
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+        model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+        tokenizer.save_pretrained(local_model_path)
+        model.save_pretrained(local_model_path)
+
+    return pipeline(
+        "text-classification",
+        model=local_model_path,
+        tokenizer=local_model_path,
+        device=-1,
+        truncation=True,
+        max_length=128
+    )
+classifier = load_roberta()
+
 @st.cache_resource
 def load_resources():
     try:
@@ -114,68 +136,6 @@ lexicon = load_inset_lexicon()
 # ============================================================
 # KONSTANTA
 # ============================================================
-DOMAIN_LEXICON = {
-    # ── KUALITAS ──────────────────────────────────────────
-    # Tidak ada di InSet
-    "aroma"       :  2,
-    "aromanya"    :  2,   # form dengan sufiks
-    "lauk"        :  1,   # netral-positif, konteksnya tergantung modifier
-    "higienis"    :  3,
-    "higienitas"  :  3,
-    "keracunan"   : -5,
-    "mentah"      : -3,
-    "matang"      :  2,
-    "bergizi"     :  3,
-    "bernutrisi"  :  3,
-    "lezat"       :  5,   # sudah ada, tapi eksplisitkan ulang
-    "tidak layak" : -4,   # bigram — ditangani terpisah
-    "basi"        : -4,
-    "ulat"        : -5,
-    "porsi"       :  1,   # netral, tergantung modifier
-    # ── LAYANAN ───────────────────────────────────────────
-    "terlambat"   : -3,
-    "molor"       : -3,
-    "katering"    :  1,
-    "vendor"      :  1,
-    "terdistribusi":  2,
-    "pelosok"     :  1,   # netral, jadi bermakna jika "sampai pelosok"
-    "merata"      :  3,   # naikkan dari +1
-    "tepat waktu" :  3,   # bigram
-    "tidak merata": -4,   # bigram
-    # ── ANGGARAN ──────────────────────────────────────────
-    "markup"      : -4,
-    "disunat"     : -4,
-    "dikorupsi"   : -5,
-    "diselewengkan": -5,
-    "tepat sasaran":  3,  # bigram
-    "tidak tepat sasaran": -4,
-}
-
-BIGRAM_OVERRIDE = {
-    # Konteks positif yang kata dasarnya negatif di InSet
-    "bau enak"      :  2,
-    "bau harum"     :  3,
-    "bau wangi"     :  3,
-    "bau sedap"     :  2,
-    # Bigram negatif penting
-    "tidak merata"  : -4,
-    "tidak layak"   : -4,
-    "tidak higienis": -4,
-    "tidak sehat"   : -3,
-    "tidak tepat"   : -2,
-    "kurang enak"   : -2,
-    "kurang bersih" : -2,
-    "kurang merata" : -3,
-    "tepat sasaran" :  3,
-    "tepat waktu"   :  3,
-}
-
-ABSOLUTE_NEGATIF = {'korupsi', 'keracunan', 'basi', 'ulat', 'markup', 'sunat', 'bocor', 'hambar', 'keras', 'mentah'}
-ABSOLUTE_POSITIF = {'terbantu', 'kenyang', 'sehat', 'lezat', 'merata'}
-
-# Gabungkan: domain lexicon override InSet untuk kata yang konflik
-final_lexicon = {**lexicon, **DOMAIN_LEXICON}
-
 ASPEK_DICT = {
     'Kualitas': [
         'kualitas', 'bagus', 'jelek', 'enak', 'basi', 'gizi', 'susu',
@@ -247,53 +207,19 @@ def get_aspects(text: str) -> list:
     found = [asp for asp, keys in ASPEK_DICT.items() if not tokens.isdisjoint(keys)]
     return found if found else ['Lainnya']
 
-def determine_sentiment(text: str) -> str:
-    if not isinstance(text, str):
+def determine_sentiment_roberta(text: str, classifier) -> str:
+    if not isinstance(text, str) or not text.strip():
         return 'Netral'
-
-    words = text.split()
-    tokens_set = set(words)
-    score = 0
-
-    # ── Helper: cek apakah kata di posisi i dinegasi ──────────
-    def is_negated(i):
-        # Cek 1-3 kata sebelumnya
-        for j in range(max(0, i - 3), i):
-            if words[j] in negation_words:
-                return True
-        return False
-
-    # ── 1. ABSOLUTE NEGATIF (dengan cek negasi) ───────────────
-    for i, word in enumerate(words):
-        if word in ABSOLUTE_NEGATIF:
-            if not is_negated(i):
-                return 'Negatif'   # hanya jika tidak dinegasi
-
-    # ── 2. ABSOLUTE POSITIF (dengan cek negasi) ───────────────
-    for i, word in enumerate(words):
-        if word in ABSOLUTE_POSITIF:
-            if not is_negated(i):
-                return 'Positif'
-
-    # ── 3. BIGRAM OVERRIDE ────────────────────────────────────
-    for i in range(len(words) - 1):
-        bigram = words[i] + " " + words[i+1]
-        if bigram in BIGRAM_OVERRIDE:
-            score += BIGRAM_OVERRIDE[bigram]
-
-    # ── 4. UNIGRAM LEXICON ────────────────────────────────────
-    for i, word in enumerate(words):
-        if i > 0 and (words[i-1] + " " + word) in BIGRAM_OVERRIDE:
-            continue
-        if word in final_lexicon:
-            val = final_lexicon[word]
-            if is_negated(i):
-                val = -val
-            score += val
-
-    if score >= 0:
-        return 'Positif'
-    return 'Negatif'
+    try:
+        result = classifier(text[:512])[0]
+        label = result['label'].lower()
+        if 'pos' in label:
+            return 'Positif'
+        elif 'neg' in label:
+            return 'Negatif'
+        return 'Netral'
+    except Exception:
+        return 'Netral'
 
 # ============================================================
 # SESSION STATE & NAVIGASI
@@ -312,6 +238,9 @@ for key, default in [
     ('df_raw', None),
     ('df_exploded', None),
     ('preprocessing_done', False),
+    ('labeling_done', False),
+    ('df_neutral_handled', None),
+    ('neutral_action', None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -343,6 +272,9 @@ if menu == PAGES[0]:
             st.session_state['df_raw'] = df
             st.session_state['df_exploded'] = None
             st.session_state['preprocessing_done'] = False
+            st.session_state['labeling_done'] = False
+            st.session_state['df_neutral_handled'] = None
+            st.session_state['neutral_action'] = None
             st.success(f"Data mentah dimuat: **{len(df)}** baris.")
             st.dataframe(df.head())
             st.button("Lanjut ke Preprocessing →", on_click=set_page, args=(PAGES[1],))
@@ -353,6 +285,9 @@ if menu == PAGES[0]:
                 st.session_state['df_exploded'] = df
                 st.session_state['df_raw'] = None
                 st.session_state['preprocessing_done'] = True
+                st.session_state['labeling_done'] = False
+                st.session_state['df_neutral_handled'] = None
+                st.session_state['neutral_action'] = None
                 st.success(f"Data preprocessing dimuat: **{len(df)}** segmen.")
                 st.dataframe(df.head())
                 st.button("Lanjut ke Labeling →", on_click=set_page, args=(PAGES[2],))
@@ -412,6 +347,9 @@ elif menu == PAGES[1]:
 
                 st.session_state['df_exploded'] = df_exploded
                 st.session_state['preprocessing_done'] = True
+                st.session_state['labeling_done'] = False
+                st.session_state['df_neutral_handled'] = None
+                st.session_state['neutral_action'] = None
 
                 # Simpan metrik ke memori
                 st.session_state['prep_stats'] = {
@@ -516,13 +454,57 @@ elif menu == PAGES[2]:
     if st.session_state['df_exploded'] is not None:
         df = st.session_state['df_exploded']
 
-        if st.button("Jalankan Pelabelan & Aspek"):
-            with st.spinner("Menentukan sentimen dan aspek per segmen..."):
-                df['sentiment_label'] = df['segment'].apply(determine_sentiment)
-                df['aspect_list'] = df['segment'].apply(get_aspects)
-                st.session_state['df_exploded'] = df
+        st.markdown("### Pengaturan Labeling Biner")
+        handle_neutral = st.radio(
+            "Pilih penanganan untuk opini yang terdeteksi 'Netral' oleh RoBERTa:",
+            ("Hapus Data Netral (Hanya simpan Positif & Negatif)", "Ubah data Netral menjadi Positif")
+        )
+        
+        if not st.session_state['labeling_done']:
+            if st.button("Jalankan Pelabelan & Aspek"):
+                with st.spinner("Menentukan sentimen dan aspek per segmen..."):
+                    classifier = load_roberta()
+                    
+                    # Progress bar untuk pelabelan RoBERTa
+                    total_rows = len(df)
+                    my_bar = st.progress(0)
+                    
+                    sentiments = []
+                    for i, seg in enumerate(df['segment']):
+                        sentiments.append(determine_sentiment_roberta(seg, classifier))
+                        # Update progress bar secara berkala agar UI tidak kaku
+                        if i % max(1, total_rows // 100) == 0:
+                            my_bar.progress(min((i + 1) / total_rows, 1.0))
+                    my_bar.progress(1.0)
+                    
+                    df['sentiment_label'] = sentiments
+                    df['aspect_list'] = df['segment'].apply(get_aspects)
 
+                    # Simpan data netral sebelum diubah/dihapus untuk ditampilkan
+                    df_neutral = df[df['sentiment_label'] == 'Netral'].copy()
+                    st.session_state['df_neutral_handled'] = df_neutral
+                    st.session_state['neutral_action'] = handle_neutral
+
+                    # Menangani label Netral sesuai pilihan pengguna
+                    if handle_neutral == "Hapus Data Netral (Hanya simpan Positif & Negatif)":
+                        df = df[df['sentiment_label'] != 'Netral'].reset_index(drop=True)
+                    else:
+                        df['sentiment_label'] = df['sentiment_label'].replace('Netral', 'Positif')
+
+                    st.session_state['df_exploded'] = df
+                    st.session_state['labeling_done'] = True
+                    st.rerun()
+        else:
+            df = st.session_state['df_exploded']
             st.success("Pelabelan selesai!")
+
+            if st.button("Ulangi Pelabelan"):
+                st.session_state['labeling_done'] = False
+                st.session_state['df_neutral_handled'] = None
+                st.session_state['neutral_action'] = None
+                if 'sentiment_label' in st.session_state['df_exploded'].columns:
+                    st.session_state['df_exploded'].drop(columns=['sentiment_label', 'aspect_list'], inplace=True, errors='ignore')
+                st.rerun()
 
             c1, c2, c3 = st.columns(3)
             with c1:
@@ -540,35 +522,50 @@ elif menu == PAGES[2]:
                 st.subheader("Jumlah Segmen per Sentimen")
                 st.bar_chart(df['sentiment_label'].value_counts())
 
-            # Contoh per aspek
-            st.subheader("Contoh Segmen per Aspek")
-            df_asp2 = df.explode('aspect_list')
-            unique_asp = df_asp2['aspect_list'].dropna().unique()
-            if len(unique_asp) > 0:
-                tabs_asp = st.tabs([str(a) for a in unique_asp])
-                for i, asp in enumerate(unique_asp):
-                    with tabs_asp[i]:
-                        subset = df_asp2[df_asp2['aspect_list'] == asp][['segment', 'sentiment_label']].head(5)
-                        st.table(subset.reset_index(drop=True))
+            with st.expander("Contoh Data dengan Sentimen & Aspek"):
+                st.dataframe(df[['segment', 'sentiment_label', 'aspect_list']].head(10))
 
-            # WordCloud
-            st.divider()
-            st.subheader("Visualisasi WordCloud")
-            wc1, wc2 = st.columns(2)
-            for col_wc, label_wc, cmap_wc in [
-                (wc1, 'Positif', 'Greens'),
-                (wc2, 'Negatif', 'Reds'),
-            ]:
-                with col_wc:
-                    st.markdown(f"**{label_wc}**")
-                    text_wc = " ".join(df[df['sentiment_label'] == label_wc]['segment'].astype(str))
-                    if text_wc.strip():
-                        wc = WordCloud(width=400, height=300, background_color='white', colormap=cmap_wc).generate(text_wc)
-                        fig_wc, ax_wc = plt.subplots()
-                        ax_wc.imshow(wc, interpolation='bilinear')
-                        ax_wc.axis('off')
-                        st.pyplot(fig_wc)
-                        plt.close(fig_wc)
+            # --- Tampilkan Info Data Netral ---
+            if st.session_state.get('df_neutral_handled') is not None and not st.session_state['df_neutral_handled'].empty:
+                st.subheader("Data Sentimen Netral yang Ditangani")
+                action_text = "dihapus dari dataset" if "Hapus" in st.session_state['neutral_action'] else "diubah menjadi Positif"
+                st.info(f"Terdapat **{len(st.session_state['df_neutral_handled'])}** segmen yang awalnya terdeteksi **Netral** oleh model RoBERTa dan telah **{action_text}** sesuai pilihan.")
+                
+                with st.expander("Contoh Data Netral"):
+                    st.dataframe(st.session_state['df_neutral_handled'][['segment', 'sentiment_label', 'aspect_list']].head(10))
+
+            # Visualisasi WordCloud per Aspek & Contoh Data
+            df_asp2 = df.explode('aspect_list')
+            aspek_list = [str(a) for a in df_asp2['aspect_list'].dropna().unique()]
+            
+            if aspek_list:
+                tabs_wc = st.tabs(aspek_list)
+                for i, asp in enumerate(aspek_list):
+                    with tabs_wc[i]:
+                        sub_asp = df_asp2[df_asp2['aspect_list'] == asp]
+                        
+                        # Tampilkan sedikit contoh datanya
+                        st.table(sub_asp[['segment', 'sentiment_label']].head(5).reset_index(drop=True))
+                        
+                        st.subheader("WordCloud per Aspek")
+                        wc1, wc2 = st.columns(2)
+                        for col_w, label_w, cmap_w in [
+                            (wc1, 'Positif', 'Greens'),
+                            (wc2, 'Negatif', 'Reds'),
+                        ]:
+                            with col_w:
+                                st.markdown(f"##### {label_w}")
+                                text_w = " ".join(sub_asp[sub_asp['sentiment_label'] == label_w]['segment'].astype(str))
+                                if text_w.strip():
+                                    wc_obj = WordCloud(width=300, height=200, background_color='white',
+                                                       colormap=cmap_w).generate(text_w)
+                                    fig_wc, ax_wc = plt.subplots()
+                                    ax_wc.imshow(wc_obj, interpolation='bilinear')
+                                    ax_wc.axis('off')
+                                    st.pyplot(fig_wc)
+                                    plt.close(fig_wc)
+                                else:
+                                    st.caption(f"Tidak ada data {label_w.lower()}.")
 
         if 'sentiment_label' in st.session_state['df_exploded'].columns:
             st.button("Lanjut ke Modeling →", on_click=set_page, args=(PAGES[3],))
@@ -627,7 +624,7 @@ elif menu == PAGES[3]:
                     
                     # 3. Latih Naive Bayes (Multinomial standar krn data sudah 51:49)
                     t_nb = time.perf_counter()
-                    nb = MultinomialNB(alpha=0.1) 
+                    nb = MultinomialNB() 
                     nb.fit(X_train_vec, y_train)
                     t_nb = time.perf_counter() - t_nb
                     y_pred_nb = nb.predict(X_test_vec)
@@ -637,7 +634,7 @@ elif menu == PAGES[3]:
                     
                     # 4. Latih LinearSVC
                     t_svm = time.perf_counter()
-                    svm = LinearSVC(random_state=42)
+                    svm = LinearSVC()
                     svm.fit(X_train_vec, y_train)
                     t_svm = time.perf_counter() - t_svm
                     y_pred_svm = svm.predict(X_test_vec)
@@ -705,6 +702,8 @@ elif menu == PAGES[3]:
                         fig_nb, ax_nb = plt.subplots(figsize=(5, 4))
                         sns.heatmap(confusion_matrix(y_t, p_nb, labels=labels_cm), annot=True, fmt='d', cmap='Blues', xticklabels=labels_cm, yticklabels=labels_cm, ax=ax_nb)
                         ax_nb.set_title(f"Confusion Matrix MultinomialNB ({split_name})", fontsize=12)
+                        ax_nb.set_xlabel("Prediksi Model")
+                        ax_nb.set_ylabel("Label Aktual")
                         st.pyplot(fig_nb)
                         plt.close(fig_nb)
 
@@ -725,6 +724,8 @@ elif menu == PAGES[3]:
                         fig_svm, ax_svm = plt.subplots(figsize=(5, 4))
                         sns.heatmap(confusion_matrix(y_t, p_svm, labels=labels_cm), annot=True, fmt='d', cmap='Blues', xticklabels=labels_cm, yticklabels=labels_cm, ax=ax_svm)
                         ax_svm.set_title(f"Confusion Matrix LinearSVC ({split_name})", fontsize=12)
+                        ax_svm.set_xlabel("Prediksi Model")
+                        ax_svm.set_ylabel("Label Aktual")
                         st.pyplot(fig_svm)
                         plt.close(fig_svm)
 
@@ -751,6 +752,8 @@ elif menu == PAGES[3]:
                 sns.barplot(x='Skor TF-IDF', y='Kata', data=df_tfidf, palette='viridis',
                             hue='Kata', legend=False, ax=ax_tf)
                 ax_tf.set_title("Top 10 Kata TF-IDF (Data Uji)")
+                ax_tf.set_xlabel("Skor TF-IDF")
+                ax_tf.set_ylabel("Kata")
                 st.pyplot(fig_tf)
                 plt.close(fig_tf)
 
@@ -867,65 +870,244 @@ elif menu == PAGES[4]:
 # ============================================================
 elif menu == PAGES[5]:
     st.header("Pengujian Model Real-Time")
-    
+
     if 'model_nb' not in st.session_state or 'model_svm' not in st.session_state:
-        st.warning("Anda belum melatih model. Silakan kembali ke Tab Modeling dan klik 'Mulai Training'.")
+        st.warning("Latih model di Tab 4 terlebih dahulu.")
     else:
-        
-        user_input = st.text_area("Masukkan opini atau teks baru terkait Program MBG:", 
-                                  height=150, 
-                                  placeholder="")
-        
-        if st.button("Analisis Teks"):
-            if user_input.strip() == "":
-                st.error("Teks tidak boleh kosong.")
-            else:
-                with st.spinner("Memproses pipeline NLP (Cleaning, Segmentasi, Stopword, Stemming)..."):
-                    # 1. Masuk ke Pipeline Preprocessing yang sama dengan Tab 2
-                    processed_segments = preprocess_text(user_input)
-                    
-                    if not processed_segments:
-                        st.warning("Teks tidak menghasilkan kata yang bermakna setelah melewati filter *stopword*.")
+        # ── INISIALISASI STATE TAB 6 ──────────────────────────
+        if 'rt_analyzed' not in st.session_state:
+            st.session_state['rt_analyzed'] = False
+            st.session_state['rt_texts'] = []
+            st.session_state['rt_labels'] = []
+            st.session_state['rt_has_labels'] = False
+
+        if not st.session_state['rt_analyzed']:
+            mode = st.radio(
+                "Mode Input:",
+                ("Input Manual", "Upload CSV"),
+                horizontal=True
+            )
+
+            # ── MODE 1: INPUT MANUAL ──────────────────────────────
+            if mode == "Input Manual":
+                st.markdown("**Format:** `kalimat | label` (label: Positif atau Negatif)")
+                raw = st.text_area(
+                    "Masukkan kalimat uji:",
+                    height=300,
+                    placeholder="makanan bergizi enak dan porsinya cukup | Positif\ndistribusi sering telat dan tidak merata | Negatif\ndana MBG dikorupsi oknum tidak bertanggung jawab | Negatif",
+                    key="rt_manual_input"
+                )
+
+                if st.button("Analisis Teks", use_container_width=True):
+                    if raw.strip():
+                        texts_to_analyze = []
+                        true_labels = []
+                        has_labels = False
+                        for line in raw.split('\n'):
+                            line = line.strip()
+                            if not line:
+                                continue
+                            if '|' in line:
+                                parts = line.split('|', 1)
+                                texts_to_analyze.append(parts[0].strip())
+                                true_labels.append(parts[1].strip().capitalize())
+                                has_labels = True
+                            else:
+                                texts_to_analyze.append(line)
+                                true_labels.append(None)
+                        
+                        st.session_state['rt_texts'] = texts_to_analyze
+                        st.session_state['rt_labels'] = true_labels
+                        st.session_state['rt_has_labels'] = has_labels
+                        st.session_state['rt_analyzed'] = True
+                        st.rerun()
                     else:
-                        # 2. Ambil model dan vectorizer dari memori
-                        nb_model = st.session_state['model_nb']
-                        svm_model = st.session_state['model_svm']
-                        vec = st.session_state['vectorizer']
-                        
-                        # 3. Transformasi ke TF-IDF
-                        X_input_tfidf = vec.transform(processed_segments)
-                        
-                        # 4. Lakukan Prediksi
-                        preds_nb = nb_model.predict(X_input_tfidf)
-                        preds_svm = svm_model.predict(X_input_tfidf)
-                        probs_nb = nb_model.predict_proba(X_input_tfidf)
-                        classes = nb_model.classes_
-                        
-                        # 5. Siapkan output tabel
-                        st.divider()
-                        st.subheader("Hasil Analisis Per Segmen")
-                        
-                        def get_color(label):
-                            if str(label) == 'Positif': return "🟢 Positif"
-                            return "🔴 Negatif"
-                        
-                        results_data = []
-                        for i, seg in enumerate(processed_segments):
-                            # Ambil aspek menggunakan fungsi dari Tab 3
-                            aspect_list = get_aspects(seg)
-                            aspect_str = ", ".join(aspect_list)
-                            
-                            # Format persentase probabilitas Naive Bayes
-                            prob_str = " | ".join([f"{cls}: {probs_nb[i][j]:.1%}" for j, cls in enumerate(classes)])
-                            
-                            results_data.append({
-                                "Segmen Teks Bersih": seg,
-                                "Aspek Terdeteksi": aspect_str,
-                                "Prediksi LinearSVC": get_color(preds_svm[i]),
-                                "Prediksi Naive Bayes": get_color(preds_nb[i]),
-                                "Probabilitas NB": prob_str
-                            })
-                        
-                        st.table(pd.DataFrame(results_data))
-                        
+                        st.warning("Teks uji tidak boleh kosong.")
+
+            # ── MODE 2: UPLOAD CSV ────────────────────────────────
+            else:
+                st.caption("Format CSV: satu kolom bernama 'full_text', satu baris per kalimat.")
+
+                # Tombol download template
+                template_df = pd.DataFrame({"full_text": [
+                    "makanan bergizi enak dan porsinya cukup untuk anak sekolah",
+                    "distribusi makanan sering telat siswa menunggu berjam-jam",
+                    "dana MBG dikorupsi dan dimarkup oknum tidak bertanggung jawab",
+                ]})
+                st.download_button(
+                    "Download Template CSV",
+                    data=template_df.to_csv(index=False).encode('utf-8'),
+                    file_name="template_pengujian.csv",
+                    mime="text/csv"
+                )
+
+                uploaded_test = st.file_uploader("Upload CSV kalimat uji:", type="csv")
                 
+                if st.button("Analisis Semua Kalimat", use_container_width=True):
+                    if uploaded_test:
+                        df_test = pd.read_csv(uploaded_test)
+                        if 'full_text' not in df_test.columns:
+                            st.error("Kolom 'full_text' tidak ditemukan di CSV.")
+                        else:
+                            texts_to_analyze = df_test['full_text'].dropna().astype(str).tolist()
+                            st.session_state['rt_texts'] = texts_to_analyze
+                            st.session_state['rt_labels'] = [None] * len(texts_to_analyze)
+                            st.session_state['rt_has_labels'] = False
+                            st.session_state['rt_analyzed'] = True
+                            st.rerun()
+                    else:
+                        st.warning("Silakan upload CSV terlebih dahulu.")
+        else:
+            st.success("Analisis Selesai")
+            if st.button("Ulangi Analisis", use_container_width=True):
+                st.session_state['rt_analyzed'] = False
+                st.session_state['rt_texts'] = []
+                st.session_state['rt_labels'] = []
+                st.session_state['rt_has_labels'] = False
+                st.rerun()
+
+        # ── PROSES ANALISIS ───────────────────────────────────
+        if st.session_state.get('rt_analyzed') and st.session_state['rt_texts']:
+            texts_to_analyze = st.session_state['rt_texts']
+            true_labels = st.session_state['rt_labels']
+            has_labels = st.session_state['rt_has_labels']
+
+            nb_model = st.session_state['model_nb']
+            svm_model = st.session_state['model_svm']
+            vec = st.session_state['vectorizer']
+
+            with st.spinner(f"Memproses {len(texts_to_analyze)} kalimat..."):
+                results_data = []
+                for text in texts_to_analyze:
+                    segments = preprocess_text(text)
+                    if not segments:
+                        continue
+                    for seg in segments:
+                        X = vec.transform([seg])
+                        pred_nb = nb_model.predict(X)[0]
+                        pred_svm = svm_model.predict(X)[0]
+                        probs_nb = nb_model.predict_proba(X)[0]
+                        classes = nb_model.classes_
+
+                        prob_str = " | ".join([
+                            f"{cls}: {probs_nb[j]:.1%}"
+                            for j, cls in enumerate(classes)
+                        ])
+                        results_data.append({
+                            "Teks Asli": text,
+                            "Segmen Bersih": seg,
+                            "Aspek": ", ".join(get_aspects(seg)),
+                            "Prediksi SVM": pred_svm,
+                            "Prediksi NB": pred_nb,
+                            "Probabilitas NB": prob_str,
+                        })
+
+            if not results_data:
+                st.warning("Tidak ada segmen valid yang dihasilkan.")
+            else:
+                df_results = pd.DataFrame(results_data)
+                st.success(f"{len(df_results)} segmen berhasil dianalisis.")
+
+                # ── TABEL HASIL ───────────────────────────────
+                st.subheader("Hasil Analisis Per Segmen")
+                st.dataframe(df_results, use_container_width=True)
+
+                # ── VISUALISASI ───────────────────────────────
+                if has_labels and any(l is not None for l in true_labels):
+                    st.divider()
+                    st.subheader("Evaluasi Akurasi Pengujian Real-Time")
+
+                    # Mapping hasil prediksi ke label asli per kalimat
+                    # (ambil prediksi segmen pertama per kalimat)
+                    eval_data = []
+                    for i, text in enumerate(texts_to_analyze):
+                        if true_labels[i] is None:
+                            continue
+                        # Ambil prediksi untuk kalimat ini dari df_results
+                        rows = df_results[df_results['Teks Asli'] == text]
+                        if rows.empty:
+                            continue
+                        # Ambil prediksi segmen pertama sebagai representasi kalimat
+                        pred_svm = rows.iloc[0]['Prediksi SVM']
+                        pred_nb = rows.iloc[0]['Prediksi NB']
+                        eval_data.append({
+                            'Teks': text[:60] + '...' if len(text) > 60 else text,
+                            'Label Sebenarnya': true_labels[i],
+                            'Prediksi SVM': pred_svm,
+                            'Prediksi NB': pred_nb,
+                            'SVM Benar': '✅' if pred_svm == true_labels[i] else '❌',
+                            'NB Benar': '✅' if pred_nb == true_labels[i] else '❌',
+                        })
+
+                    if eval_data:
+                        df_eval_rt = pd.DataFrame(eval_data)
+
+                        # Hitung akurasi
+                        acc_svm = (df_eval_rt['Prediksi SVM'] == df_eval_rt['Label Sebenarnya']).mean()
+                        acc_nb = (df_eval_rt['Prediksi NB'] == df_eval_rt['Label Sebenarnya']).mean()
+
+                        # Metrik ringkas
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Akurasi LinearSVC", f"{acc_svm:.1%}")
+                        with col2:
+                            st.metric("Akurasi Multinomial NB", f"{acc_nb:.1%}")
+
+                        # Tabel detail benar/salah
+                        st.dataframe(df_eval_rt, use_container_width=True)
+
+                        # Bar chart akurasi
+                        fig_acc, ax_acc = plt.subplots(figsize=(6, 4))
+                        models = ['LinearSVC', 'Multinomial NB']
+                        accs = [acc_svm, acc_nb]
+                        colors = ['#2ecc71' if a >= 0.7 else '#e74c3c' for a in accs]
+                        bars = ax_acc.bar(models, accs, color=colors, width=0.4, edgecolor='white')
+                        ax_acc.set_ylim(0, 1.1)
+                        ax_acc.set_ylabel("Akurasi")
+                        ax_acc.set_title("Akurasi Pengujian Real-Time")
+                        ax_acc.axhline(y=0.7, color='gray', linestyle='--',
+                                    linewidth=1, label='Threshold 70%')
+                        ax_acc.legend()
+                        for bar, acc in zip(bars, accs):
+                            ax_acc.text(
+                                bar.get_x() + bar.get_width()/2,
+                                bar.get_height() + 0.02,
+                                f'{acc:.1%}', ha='center', fontsize=12, fontweight='bold'
+                            )
+                        st.pyplot(fig_acc)
+                        plt.close(fig_acc)
+
+                        # Confusion matrix per model
+                        st.divider()
+                        st.markdown("**Confusion Matrix Pengujian Real-Time**")
+                        labels_cm = sorted(df_eval_rt['Label Sebenarnya'].unique())
+                        fig_cm, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+                        for ax, pred_col, title in [
+                            (axes[0], 'Prediksi SVM', 'LinearSVC'),
+                            (axes[1], 'Prediksi NB', 'MultinomialNB'),
+                        ]:
+                            cm = confusion_matrix(
+                                df_eval_rt['Label Sebenarnya'],
+                                df_eval_rt[pred_col],
+                                labels=labels_cm
+                            )
+                            sns.heatmap(
+                                cm, annot=True, fmt='d', cmap='Blues',
+                                xticklabels=labels_cm, yticklabels=labels_cm, ax=ax
+                            )
+                            ax.set_title(f"Confusion Matrix — {title}")
+                            ax.set_xlabel("Prediksi")
+                            ax.set_ylabel("Aktual")
+
+                        plt.tight_layout()
+                        st.pyplot(fig_cm)
+                        plt.close(fig_cm)
+
+                        # Download hasil evaluasi
+                        st.download_button(
+                            "Download Hasil Evaluasi Real-Time (CSV)",
+                            data=df_eval_rt.to_csv(index=False).encode('utf-8'),
+                            file_name="evaluasi_realtime.csv",
+                            mime="text/csv"
+                        )
