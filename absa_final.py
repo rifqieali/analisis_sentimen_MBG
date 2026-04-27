@@ -586,7 +586,7 @@ elif menu == PAGES[3]:
             try:
                 saved = joblib.load('saved_model_data.joblib')
                 for k in ['model_nb', 'model_svm', 'vectorizer', 'y_test',
-                          'y_pred_nb', 'y_pred_svm', 'test_data_eval', 't_nb', 't_svm']:
+                          'y_pred_nb', 'y_pred_svm', 'test_data_eval', 't_nb', 't_svm', 'hasil_skenario']:
                     if k in saved:
                         st.session_state[k] = saved[k]
                         if k in ['model_nb', 'model_svm', 'vectorizer']:
@@ -666,7 +666,30 @@ elif menu == PAGES[3]:
                         
                 pb.progress(100)
                 st.session_state['hasil_skenario'] = hasil_skenario
-                st.success("Training untuk ketiga skenario selesai!")
+                
+                # --- SIMPAN HASIL MODELING KE DISK ---
+                try:
+                    saved_data = {
+                        'model_nb': st.session_state['model_nb'],
+                        'model_svm': st.session_state['model_svm'],
+                        'vectorizer': st.session_state['vectorizer'],
+                        'test_data_eval': st.session_state['test_data_eval'],
+                        'hasil_skenario': hasil_skenario
+                    }
+                    if "80:20" in hasil_skenario:
+                        data_8020 = hasil_skenario["80:20"]
+                        saved_data.update({
+                            'y_test': data_8020['y_test'],
+                            'y_pred_nb': data_8020['y_pred_nb'],
+                            'y_pred_svm': data_8020['y_pred_svm'],
+                            't_nb': data_8020['t_nb'],
+                            't_svm': data_8020['t_svm'],
+                        })
+                    joblib.dump(saved_data, 'saved_model_data.joblib')
+                    st.success("Training selesai dan model berhasil disimpan ke 'saved_model_data.joblib'!")
+                except Exception as e:
+                    st.success("Training untuk ketiga skenario selesai!")
+                    st.warning(f"Namun gagal menyimpan model ke disk: {e}")
 
         # ── TAMPILKAN HASIL EVALUASI DENGAN TABS ──────────
         if 'hasil_skenario' in st.session_state:
